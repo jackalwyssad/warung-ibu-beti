@@ -31,14 +31,15 @@ Repositori ini mengimplementasikan sistem backend terintegrasi untuk **Warung Ib
 
 ## 🏗️ 1. Diagram Arsitektur & Topologi Sistem
 
-Arsitektur sistem memisahkan proses transaksi kasir yang sinkron dengan proses analitik/pembukuan dan notifikasi yang asinkron:
+Arsitektur sistem memisahkan interaksi pengguna/pembeli dan proses transaksi kasir yang sinkron dengan proses analitik/pembukuan dan notifikasi yang asinkron:
 
 ```mermaid
 flowchart TD
-    subgraph Klien ["Klien & Antarmuka"]
-        Kasir["Aplikasi Kasir / POS"]
-        BotWA["Bot WhatsApp Pelanggan"]
-        Swagger["Swagger UI (Port 8082)"]
+    subgraph Pengguna ["Pelanggan & Antarmuka Klien"]
+        Pembeli["👤 Pembeli / Pelanggan"]
+        Kasir["💻 Aplikasi Kasir / POS"]
+        BotWA["📱 Bot WhatsApp Pelanggan"]
+        Swagger["📑 Swagger UI (Port 8082)"]
     end
 
     subgraph CoreService ["Layanan Inti: Katalog & Stok (Port 8000)"]
@@ -66,10 +67,14 @@ flowchart TD
         Alert["Alert WhatsApp / Layar Kasir<br/>(Peringatan Stok Menipis)"]
     end
 
-    %% Flow REST
+    %% Flow Klien / Pembeli
+    Pembeli -->|1a. Belanja langsung di warung| Kasir
+    Pembeli -->|1b. Pesan barang via chat| BotWA
     Kasir -->|HTTP POST penyesuaian-stok| API
     BotWA -->|HTTP POST penyesuaian-stok| API
     Swagger -->|Uji Coba Interaktif| API
+
+    %% Flow REST & DB
     API -->|lockForUpdate & Update| DB
     API -->|Dispatch| Event
     Event --> Publisher
@@ -96,11 +101,12 @@ flowchart TD
 
 ## 🔄 2. Diagram Alur Transaksi & Messaging (Sequence Diagram)
 
-Diagram berikut mengilustrasikan siklus lengkap dari kasir melakukan transaksi hingga pencatatan pembukuan dan deteksi stok menipis:
+Diagram berikut mengilustrasikan siklus lengkap dari **Pembeli** bertransaksi di kasir hingga mutasi stok, respons ke pembeli, pencatatan otomatis ke jurnal pembukuan, dan notifikasi stok:
 
 ```mermaid
 sequenceDiagram
     autonumber
+    actor Pembeli as Pembeli / Pelanggan
     actor Kasir as Kasir / POS
     participant API as REST API (Laravel)
     participant DB as MySQL (produk)
@@ -109,6 +115,9 @@ sequenceDiagram
     participant Jurnal as MySQL (jurnal_penjualan)
     participant ConsNotif as Consumer Notifikasi
 
+    Note over Pembeli,Kasir: Skenario 1: Transaksi Penjualan Barang
+    Pembeli->>Kasir: Membeli barang (misal: 3 pcs Indomie)
+    activate Kasir
     Kasir->>API: POST /api/v1/produk/{sku}/penyesuaian-stok<br/>(perubahan: -3, alasan: penjualan, referensi: TRX-101)
     
     activate API
@@ -117,11 +126,14 @@ sequenceDiagram
         API->>DB: UPDATE produk stok berkurang 3 dan COMMIT
         API->>RMQ: Publish Event (Routing Key: stok.penjualan)<br/>Payload: sku, perubahan, alasan, stok_sesudah: 7, message_id
         API-->>Kasir: HTTP 200 OK (Data Produk dan Stok Terkini)
+        Kasir-->>Pembeli: Serahkan struk belanja dan barang
     else Stok Kurang (Stok 2 tidak cukup untuk pengurangan 3)
         API->>DB: ROLLBACK
         API-->>Kasir: HTTP 409 Conflict (RFC 9457 Problem Details)
+        Kasir-->>Pembeli: Informasikan bahwa stok tidak mencukupi
     end
     deactivate API
+    deactivate Kasir
 
     par Pembukuan Otomatis
         RMQ->>ConsBuku: Deliver message (stok.penjualan)
@@ -200,7 +212,7 @@ flowchart TD
 ### Langkah Menjalankan:
 1. **Clone repositori**:
    ```bash
-   git clone <URL_REPOSITORY_GITHUB>
+   git clone https://github.com/jackalwyssad/warung-ibu-beti.git
    cd warung-ibu-beti
    ```
 
