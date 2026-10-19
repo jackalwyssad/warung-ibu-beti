@@ -8,10 +8,11 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('produk', function (Blueprint $table) {
+        Schema::create('barang', function (Blueprint $table) {
             $table->id();
-            $table->string('sku', 7)->unique();
+            $table->string('kode_barang', 10)->unique();
             $table->string('nama', 120);
+            $table->string('kategori', 50)->default('sembako');
             $table->unsignedBigInteger('harga');
             $table->unsignedInteger('stok')->default(0);
             $table->timestamps();
@@ -20,6 +21,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('produk');
+        Schema::dropIfExists('barang');
     }
 };

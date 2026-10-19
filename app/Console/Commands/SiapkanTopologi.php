@@ -8,22 +8,23 @@ use Illuminate\Console\Command;
 class SiapkanTopologi extends Command
 {
     protected $signature = 'warung:topologi';
-    protected $description = 'Menyiapkan exchange, queue, dead-letter queue, dan binding di RabbitMQ';
+    protected $description = 'Mendeklarasikan Exchange warung.sembako.events, DLX warung.sembako.dlx, dan antrean';
 
     public function handle(): int
     {
-        $conn = RabbitMQ::koneksi();
-        $ch = $conn->channel();
-        RabbitMQ::siapkanTopologi($ch);
-        $ch->close();
-        $conn->close();
+        $koneksi = RabbitMQ::koneksi();
+        $channel = $koneksi->channel();
 
-        $this->info('Topologi RabbitMQ Warung Ibu Beti berhasil disiapkan!');
-        $this->line('- Exchange: warung.events (topic)');
-        $this->line('- Exchange DLX: warung.dlx (fanout)');
-        $this->line('- Queue: pembukuan.penjualan (binding: stok.penjualan)');
-        $this->line('- Queue: pembukuan.penjualan.dlq (binding: warung.dlx)');
-        $this->line('- Queue: notifikasi.stok (binding: stok.*)');
+        RabbitMQ::siapkanTopologi($channel);
+
+        $this->info('Topologi RabbitMQ Warung Ibu Beti berhasil disiapkan:');
+        $this->line('- Topic Exchange: warung.sembako.events');
+        $this->line('- Fanout DLX: warung.sembako.dlx');
+        $this->line('- Queue Buku Kas: kasir.buku-kas (DLX -> warung.audit.dlq)');
+        $this->line('- Queue Pantau Stok: gudang.stok-kritis');
+
+        $channel->close();
+        $koneksi->close();
 
         return self::SUCCESS;
     }

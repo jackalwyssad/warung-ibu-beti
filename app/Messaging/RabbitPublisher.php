@@ -14,7 +14,6 @@ class RabbitPublisher
         $channel = $koneksi->channel();
 
         try {
-            // durable = true: exchange tetap ada setelah RabbitMQ dinyalakan ulang
             $channel->exchange_declare($c['exchange'], 'topic', false, true, false);
 
             $pesan = new AMQPMessage(json_encode($data, JSON_THROW_ON_ERROR), [

@@ -1,32 +1,32 @@
 openapi: 3.1.0
 info:
-  title: Layanan Katalog dan Stok — Warung Ibu Beti
+  title: Layanan Katalog, Persediaan Sembako, dan Transaksi — Warung Ibu Beti
   version: 1.0.0
   contact:
     name: Tim TI Warung Ibu Beti (Kelompok Intel)
     email: ti@warungibubeti.test
   description: |
-    Kontrak REST API untuk membaca katalog produk dan menyesuaikan stok Warung Ibu Beti.
-    Dipakai oleh kasir toko fisik dan bot pemesanan WhatsApp.
-    Semua galat dikembalikan dalam format Problem Details (RFC 9457).
+    Kontrak REST API resmi untuk membaca katalog sembako, mengelola persediaan fisik rak warung,
+    dan mencatat transaksi kasir POS serta pesanan bot WhatsApp Warung Ibu Beti.
+    Seluruh galat dikembalikan dalam format standar RFC 9457 Problem Details (application/problem+json).
 servers:
   - url: http://localhost:8000/api
-    description: Lingkungan lokal (Port 8000)
+    description: Lingkungan Docker Sail Lokal (Port 8000)
   - url: http://localhost/api
-    description: Lingkungan alternatif (Port 8000)
+    description: Lingkungan Port Default
 tags:
-  - name: Produk
-    description: Katalog sembako dan manajemen stok Warung Ibu Beti
+  - name: Sembako
+    description: Manajemen komoditas sembako dan mutasi transaksi kasir Warung Ibu Beti
 paths:
-  /v1/produk:
+  /v1/barang:
     get:
-      tags: [Produk]
-      operationId: daftarProduk
-      summary: Menampilkan seluruh produk beserta stoknya
-      description: Mengembalikan seluruh produk di katalog warung, diurutkan menurut SKU.
+      tags: [Sembako]
+      operationId: daftarBarang
+      summary: Menampilkan seluruh komoditas sembako beserta sisa persediaan
+      description: Mengembalikan seluruh data barang dagangan warung, diurutkan menurut kode barang.
       responses:
         '200':
-          description: Daftar produk
+          description: Daftar komoditas sembako berhasil diambil
           content:
             application/json:
               schema:
@@ -36,164 +36,186 @@ paths:
                   data:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Produk'
+                      $ref: '#/components/schemas/Barang'
     post:
-      tags: [Produk]
-      operationId: tambahProduk
-      summary: Menambahkan produk baru ke katalog
-      description: SKU harus unik (format ABC-123). Bila `stok` tidak dikirim, stok awal dianggap 0.
+      tags: [Sembako]
+      operationId: tambahBarang
+      summary: Menambahkan komoditas sembako baru ke warung
+      description: Kode barang harus unik (format ABC-123). Bila nilai `stok` tidak dikirim, stok awal dianggap 0.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProdukBaru'
+              $ref: '#/components/schemas/TambahBarang'
       responses:
         '201':
-          description: Produk berhasil dibuat
+          description: Komoditas berhasil didaftarkan
           headers:
             Location:
-              description: URL produk yang baru dibuat
+              description: URL detail barang yang baru dibuat
               schema:
                 type: string
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProdukTunggal'
+                $ref: '#/components/schemas/BarangTunggal'
         '422':
           $ref: '#/components/responses/ValidasiGagal'
-  /v1/produk/{sku}:
+
+  /v1/barang/{kode_barang}:
+    parameters:
+      - $ref: '#/components/parameters/KodeBarang'
     get:
-      parameters:
-        - name: sku
-          in: path
-          required: true
-          description: Kode unik produk, misalnya BRG-001
-          schema:
-            type: string
-            pattern: '^[A-Z]{3}-[0-9]{3}$'
-      tags: [Produk]
-      operationId: detailProduk
-      summary: Menampilkan satu produk berdasarkan SKU
-      description: Mengembalikan 404 dalam format Problem Details bila SKU tidak ada.
+      tags: [Sembako]
+      operationId: detailBarang
+      summary: Menampilkan detail satu komoditas sembako berdasarkan kode barang
+      description: Mengembalikan kode galat 404 Problem Details jika komoditas tidak ditemukan di katalog warung.
       responses:
         '200':
-          description: Detail produk
+          description: Detail informasi komoditas sembako
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProdukTunggal'
+                $ref: '#/components/schemas/BarangTunggal'
         '404':
-          $ref: '#/components/responses/TidakDitemukan'
-  /v1/produk/{sku}/penyesuaian-stok:
+          $ref: '#/components/responses/KomoditasTidakDitemukan'
+
+  /v1/barang/{kode_barang}/catat-transaksi:
+    parameters:
+      - $ref: '#/components/parameters/KodeBarang'
     post:
-      parameters:
-        - name: sku
-          in: path
-          required: true
-          description: Kode unik produk, misalnya BRG-001
-          schema:
-            type: string
-            pattern: '^[A-Z]{3}-[0-9]{3}$'
-      tags: [Produk]
-      operationId: sesuaikanStok
-      summary: Menambah atau mengurangi stok satu produk
+      tags: [Sembako]
+      operationId: catatTransaksiBarang
+      summary: Mencatat transaksi mutasi persediaan barang sembako
       description: |
-        Nilai `perubahan` positif menambah stok (restok), negatif mengurangi stok
-        (penjualan). Stok tidak boleh menjadi negatif.
+        Nilai `perubahan` negatif untuk arus keluar (penjualan kasir atau pesanan WhatsApp),
+        dan positif untuk arus masuk (kulakan gudang atau retur). Sisa persediaan rak warung tidak boleh defisit (< 0).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PenyesuaianStok'
+              $ref: '#/components/schemas/CatatTransaksiBarang'
       responses:
         '200':
-          description: Stok berhasil disesuaikan
+          description: Transaksi berhasil dicatat dan persediaan diperbarui
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProdukTunggal'
+                $ref: '#/components/schemas/BarangTunggal'
         '404':
-          $ref: '#/components/responses/TidakDitemukan'
+          $ref: '#/components/responses/KomoditasTidakDitemukan'
         '409':
-          description: Stok tidak cukup untuk pengurangan yang diminta
+          description: Persediaan di warung tidak mencukupi permintaan transaksi
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
               example:
-                type: https://warungibubeti.test/problem/stok-tidak-cukup
-                title: Stok tidak cukup
+                type: https://warungibubeti.test/problem/persediaan-defisit
+                title: Persediaan Sembako Tidak Cukup
                 status: 409
-                detail: Stok BRG-001 tinggal 3, tidak bisa dikurangi 5.
-                instance: /api/v1/produk/BRG-001/penyesuaian-stok
+                detail: Persediaan barang SBK-001 di rak warung hanya tersisa 3, tidak mencukupi permintaan transaksi 5.
+                instance: /api/v1/barang/SBK-001/catat-transaksi
                 stok_tersedia: 3
         '422':
           $ref: '#/components/responses/ValidasiGagal'
+
 components:
   parameters:
-    Sku:
-      name: sku
+    KodeBarang:
+      name: kode_barang
       in: path
       required: true
-      description: Kode unik produk, misalnya BRG-001
+      description: Kode unik komoditas sembako (format ABC-123)
       schema:
         type: string
         pattern: '^[A-Z]{3}-[0-9]{3}$'
+      example: SBK-001
+
   schemas:
-    Produk:
+    Barang:
       type: object
-      required: [sku, nama, harga, stok, diperbarui_pada]
+      required: [kode_barang, nama, kategori, harga, stok, tersedia, diperbarui_pada]
       properties:
-        sku:
+        kode_barang:
           type: string
-          example: BRG-001
+          example: SBK-001
         nama:
           type: string
-          example: Beras Pandan Wangi 5kg
+          example: Beras Rojo Lele 5kg
+        kategori:
+          type: string
+          example: sembako
         harga:
           type: integer
           minimum: 0
-          description: Harga dalam rupiah, tanpa desimal
-          example: 75000
+          description: Harga eceran warung dalam rupiah (tanpa desimal)
+          example: 72000
         stok:
           type: integer
           minimum: 0
-          example: 10
+          description: Jumlah stok fisik di rak warung
+          example: 15
+        tersedia:
+          type: boolean
+          description: Indikator cepat ketersediaan stok (true bila stok > 0)
+          example: true
         diperbarui_pada:
           type: string
           format: date-time
-    ProdukTunggal:
+
+    BarangTunggal:
       type: object
       required: [data]
       properties:
         data:
-          $ref: '#/components/schemas/Produk'
-    ProdukBaru:
+          $ref: '#/components/schemas/Barang'
+
+    TambahBarang:
       type: object
-      required: [sku, nama, harga]
+      required: [kode_barang, nama, harga]
       properties:
-        sku:
+        kode_barang:
           type: string
           pattern: '^[A-Z]{3}-[0-9]{3}$'
-          example: BRG-001
+          example: SBK-001
         nama:
           type: string
           maxLength: 120
-          example: Beras Pandan Wangi 5kg
+          example: Beras Rojo Lele 5kg
+        kategori:
+          type: string
+          enum: [sembako, minuman, bumbu, makanan]
+          example: sembako
         harga:
           type: integer
           minimum: 0
-          example: 75000
+          example: 72000
         stok:
           type: integer
           minimum: 0
           default: 0
-          example: 10
+          example: 15
+
+    CatatTransaksiBarang:
+      type: object
+      required: [perubahan, jenis_transaksi]
+      properties:
+        perubahan:
+          type: integer
+          not:
+            const: 0
+          example: -4
+        jenis_transaksi:
+          type: string
+          enum: [penjualan_kasir, pesanan_wa, kulakan_gudang, retur_rusak]
+          example: penjualan_kasir
+
     Problem:
       type: object
-      description: Problem Details sesuai RFC 9457
+      description: Format Problem Details sesuai RFC 9457
       required: [type, title, status]
       properties:
         type:
@@ -210,36 +232,24 @@ components:
           format: uri-reference
         errors:
           type: object
-          description: Rincian galat validasi per field (anggota tambahan)
+          description: Rincian galat validasi per field
           additionalProperties:
             type: array
             items:
               type: string
         stok_tersedia:
           type: integer
-          description: Stok yang masih tersedia saat galat 409 terjadi
-    PenyesuaianStok:
-      type: object
-      required: [perubahan, alasan]
-      properties:
-        perubahan:
-          type: integer
-          not:
-            const: 0
-          example: -2
-        alasan:
-          type: string
-          enum: [penjualan, restok, koreksi]
-          example: penjualan
+          description: Sisa stok fisik saat galat 409 terjadi
+
   responses:
-    TidakDitemukan:
-      description: Produk dengan SKU tersebut tidak ada
+    KomoditasTidakDitemukan:
+      description: Barang dengan kode tersebut tidak ditemukan di warung
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
     ValidasiGagal:
-      description: Isi permintaan tidak sesuai kontrak
+      description: Parameter atau isi permintaan melanggar aturan kontrak
       content:
         application/problem+json:
           schema:

@@ -4,13 +4,14 @@ namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class TambahProdukRequest extends FormRequest
+class TambahBarangRequest extends FormRequest
 {
     public function rules(): array
     {
         return [
-            'sku' => ['required', 'string', 'regex:/^[A-Z]{3}-[0-9]{3}$/', 'unique:produk,sku'],
+            'kode_barang' => ['required', 'string', 'regex:/^[A-Z]{3}-[0-9]{3}$/', 'unique:barang,kode_barang'],
             'nama' => ['required', 'string', 'max:120'],
+            'kategori' => ['sometimes', 'string', 'in:sembako,minuman,bumbu,makanan'],
             'harga' => ['required', 'integer', 'min:0'],
             'stok' => ['sometimes', 'integer', 'min:0'],
         ];

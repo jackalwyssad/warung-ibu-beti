@@ -6,10 +6,10 @@ use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Support\Str;
 
 /**
- * Event domain: stok sebuah produk baru saja berubah di Warung Ibu Beti.
- * Ditulis dalam bentuk lampau karena menyatakan fakta yang sudah terjadi.
+ * Event domain: Transaksi persediaan sembako berhasil diproses.
+ * Menyatakan fakta bisnis yang sudah selesai dan terkonfirmasi di database.
  */
-class StokDisesuaikan
+class TransaksiSembakoTercatat
 {
     use Dispatchable;
 
@@ -17,9 +17,9 @@ class StokDisesuaikan
     public readonly string $terjadiPada;
 
     public function __construct(
-        public readonly string $sku,
+        public readonly string $kodeBarang,
         public readonly int $perubahan,
-        public readonly string $alasan,
+        public readonly string $jenisTransaksi,
         public readonly int $stokSesudah,
         public readonly int $harga,
     ) {
@@ -27,13 +27,15 @@ class StokDisesuaikan
         $this->terjadiPada = now()->toIso8601String();
     }
 
-    /** Isi (body) pesan yang dikirim ke broker — inilah kontrak event. */
+    /**
+     * Kontrak pesan event yang dikirimkan ke RabbitMQ
+     */
     public function payload(): array
     {
         return [
-            'sku' => $this->sku,
+            'kode_barang' => $this->kodeBarang,
             'perubahan' => $this->perubahan,
-            'alasan' => $this->alasan,
+            'jenis_transaksi' => $this->jenisTransaksi,
             'stok_sesudah' => $this->stokSesudah,
             'harga' => $this->harga,
             'terjadi_pada' => $this->terjadiPada,

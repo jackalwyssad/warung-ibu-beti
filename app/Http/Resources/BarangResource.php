@@ -5,19 +5,17 @@ namespace App\Http\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
-/**
- * Representasi produk yang dijanjikan kontrak (schema Produk di openapi.yaml).
- * Kolom internal seperti id dan created_at sengaja tidak ikut ditampilkan.
- */
-class ProdukResource extends JsonResource
+class BarangResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
         return [
-            'sku' => $this->sku,
+            'kode_barang' => $this->kode_barang,
             'nama' => $this->nama,
+            'kategori' => $this->kategori ?? 'sembako',
             'harga' => $this->harga,
             'stok' => $this->stok,
+            'tersedia' => $this->stok > 0,
             'diperbarui_pada' => $this->updated_at?->toIso8601String(),
         ];
     }

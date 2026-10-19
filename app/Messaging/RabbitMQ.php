@@ -15,27 +15,33 @@ class RabbitMQ
     }
 
     /**
-     * Menyiapkan exchange, queue, dan binding untuk Warung Ibu Beti.
+     * Menyiapkan topologi: Exchange Topic, Fanout DLX, antrean buku kas, dan antrean pantau stok
      */
     public static function siapkanTopologi(AMQPChannel $channel): void
     {
-        $exchange = config('rabbitmq.exchange', 'warung.events');
+        // 1. Topic Exchange utama warung sembako
+        $channel->exchange_declare('warung.sembako.events', 'topic', false, true, false);
 
-        // Exchange event milik warung-ibu-beti (topic)
-        $channel->exchange_declare($exchange, 'topic', false, true, false);
+        // 2. Dead Letter Exchange (Fanout) + Antrean DLQ untuk pesan gagal / korup
+        $channel->exchange_declare('warung.sembako.dlx', 'fanout', false, true, false);
+        $channel->queue_declare('warung.audit.dlq', false, true, false, false);
+        $channel->queue_bind('warung.audit.dlq', 'warung.sembako.dlx');
 
-        // Dead letter: exchange + queue tempat pesan yang ditolak dikumpulkan
-        $channel->exchange_declare('warung.dlx', 'fanout', false, true, false);
-        $channel->queue_declare('pembukuan.penjualan.dlq', false, true, false, false);
-        $channel->queue_bind('pembukuan.penjualan.dlq', 'warung.dlx');
+        // 3. Antrean Buku Kas: Konsumen pencatat keuangan warung, dilengkapi DLX
+        $channel->queue_declare(
+            'kasir.buku-kas',
+            false,
+            true,
+            false,
+            false,
+            false,
+            new AMQPTable(['x-dead-letter-exchange' => 'warung.sembako.dlx'])
+        );
+        // Bind transaksi kasir dan pesanan wa (transaksi.*)
+        $channel->queue_bind('kasir.buku-kas', 'warung.sembako.events', 'transaksi.*');
 
-        // Queue pembukuan: hanya menerima penjualan; pesan yang ditolak dialihkan ke warung.dlx
-        $channel->queue_declare('pembukuan.penjualan', false, true, false, false, false,
-            new AMQPTable(['x-dead-letter-exchange' => 'warung.dlx']));
-        $channel->queue_bind('pembukuan.penjualan', $exchange, 'stok.penjualan');
-
-        // Queue notifikasi stok: menerima semua perubahan stok (wildcard stok.*)
-        $channel->queue_declare('notifikasi.stok', false, true, false, false);
-        $channel->queue_bind('notifikasi.stok', $exchange, 'stok.*');
+        // 4. Antrean Pantau Stok Kritis: Menerima seluruh pergerakan sembako
+        $channel->queue_declare('gudang.stok-kritis', false, true, false, false);
+        $channel->queue_bind('gudang.stok-kritis', 'warung.sembako.events', '*.*');
     }
 }
