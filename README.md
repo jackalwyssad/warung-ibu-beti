@@ -89,7 +89,7 @@ flowchart TD
     QPenjualan --> ConsPembukuan
     ConsPembukuan -->|firstOrCreate by message_id| DBJurnal
     QNotif --> ConsNotif
-    ConsNotif -->|Cek stok_sesudah <= batas| Alert
+    ConsNotif -->|Cek batas stok| Alert
 ```
 
 ---
@@ -112,34 +112,34 @@ sequenceDiagram
     Kasir->>API: POST /api/v1/produk/{sku}/penyesuaian-stok<br/>(perubahan: -3, alasan: penjualan, referensi: TRX-101)
     
     activate API
-    API->>DB: BEGIN TRANSACTION & SELECT ... FOR UPDATE
-    alt Stok Cukup (misal 10 -> 7)
-        API->>DB: UPDATE produk SET stok = stok - 3; COMMIT
+    API->>DB: BEGIN TRANSACTION dan SELECT FOR UPDATE
+    alt Stok Cukup (Stok 10 menjadi 7)
+        API->>DB: UPDATE produk stok berkurang 3 dan COMMIT
         API->>RMQ: Publish Event (Routing Key: stok.penjualan)<br/>Payload: sku, perubahan, alasan, stok_sesudah: 7, message_id
-        API-->>Kasir: HTTP 200 OK (Data Produk & Stok Terkini)
-    else Stok Tidak Cukup (misal stok = 2, minta -3)
+        API-->>Kasir: HTTP 200 OK (Data Produk dan Stok Terkini)
+    else Stok Kurang (Stok 2 tidak cukup untuk pengurangan 3)
         API->>DB: ROLLBACK
-        API-->>Kasir: HTTP 409 Conflict (RFC 9457 Problem Details:<br/>detail: "Stok produk tidak mencukupi untuk pengurangan 3...")
+        API-->>Kasir: HTTP 409 Conflict (RFC 9457 Problem Details)
     end
     deactivate API
 
-    par Asynchronous: Pembukuan Otomatis
+    par Pembukuan Otomatis
         RMQ->>ConsBuku: Deliver message (stok.penjualan)
         activate ConsBuku
-        ConsBuku->>Jurnal: Cek & Simpan (firstOrCreate message_id)
-        alt Pesan Valid & Belum Pernah Dicatat
+        ConsBuku->>Jurnal: Cek dan Simpan (firstOrCreate message_id)
+        alt Pesan Valid dan Belum Dicatat
             Jurnal-->>ConsBuku: Row tersimpan
             ConsBuku->>RMQ: basic_ack (Hapus dari antrean)
         else Pesan Duplikat (Idempoten)
-            ConsBuku->>RMQ: basic_ack (Abaikan & ACK)
-        else Pesan Korup / Format Salah
-            ConsBuku->>RMQ: basic_nack(requeue=false) -> Masuk DLQ (pembukuan.penjualan.dlq)
+            ConsBuku->>RMQ: basic_ack (Abaikan dan ACK)
+        else Pesan Korup atau Format Salah
+            ConsBuku->>RMQ: basic_nack(requeue=false) dialihkan ke DLQ
         end
         deactivate ConsBuku
-    and Asynchronous: Notifikasi Stok Menipis
+    and Notifikasi Stok Menipis
         RMQ->>ConsNotif: Deliver message (stok.*)
         activate ConsNotif
-        opt stok_sesudah <= batas_minimum (misal <= 5)
+        opt Stok Sesudah Kurang Dari Batas Minimum
             ConsNotif->>ConsNotif: Cetak Notifikasi Realtime / Alert Peringatan
         end
         ConsNotif->>RMQ: basic_ack
