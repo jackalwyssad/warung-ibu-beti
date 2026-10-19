@@ -1,0 +1,246 @@
+openapi: 3.1.0
+info:
+  title: Layanan Katalog dan Stok — Warung Ibu Beti
+  version: 1.0.0
+  contact:
+    name: Tim TI Warung Ibu Beti (Kelompok Intel)
+    email: ti@warungibubeti.test
+  description: |
+    Kontrak REST API untuk membaca katalog produk dan menyesuaikan stok Warung Ibu Beti.
+    Dipakai oleh kasir toko fisik dan bot pemesanan WhatsApp.
+    Semua galat dikembalikan dalam format Problem Details (RFC 9457).
+servers:
+  - url: http://localhost:8000/api
+    description: Lingkungan lokal (Port 8000)
+  - url: http://localhost/api
+    description: Lingkungan alternatif (Port 8000)
+tags:
+  - name: Produk
+    description: Katalog sembako dan manajemen stok Warung Ibu Beti
+paths:
+  /v1/produk:
+    get:
+      tags: [Produk]
+      operationId: daftarProduk
+      summary: Menampilkan seluruh produk beserta stoknya
+      description: Mengembalikan seluruh produk di katalog warung, diurutkan menurut SKU.
+      responses:
+        '200':
+          description: Daftar produk
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Produk'
+    post:
+      tags: [Produk]
+      operationId: tambahProduk
+      summary: Menambahkan produk baru ke katalog
+      description: SKU harus unik (format ABC-123). Bila `stok` tidak dikirim, stok awal dianggap 0.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProdukBaru'
+      responses:
+        '201':
+          description: Produk berhasil dibuat
+          headers:
+            Location:
+              description: URL produk yang baru dibuat
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProdukTunggal'
+        '422':
+          $ref: '#/components/responses/ValidasiGagal'
+  /v1/produk/{sku}:
+    get:
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          description: Kode unik produk, misalnya BRG-001
+          schema:
+            type: string
+            pattern: '^[A-Z]{3}-[0-9]{3}$'
+      tags: [Produk]
+      operationId: detailProduk
+      summary: Menampilkan satu produk berdasarkan SKU
+      description: Mengembalikan 404 dalam format Problem Details bila SKU tidak ada.
+      responses:
+        '200':
+          description: Detail produk
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProdukTunggal'
+        '404':
+          $ref: '#/components/responses/TidakDitemukan'
+  /v1/produk/{sku}/penyesuaian-stok:
+    post:
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          description: Kode unik produk, misalnya BRG-001
+          schema:
+            type: string
+            pattern: '^[A-Z]{3}-[0-9]{3}$'
+      tags: [Produk]
+      operationId: sesuaikanStok
+      summary: Menambah atau mengurangi stok satu produk
+      description: |
+        Nilai `perubahan` positif menambah stok (restok), negatif mengurangi stok
+        (penjualan). Stok tidak boleh menjadi negatif.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PenyesuaianStok'
+      responses:
+        '200':
+          description: Stok berhasil disesuaikan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProdukTunggal'
+        '404':
+          $ref: '#/components/responses/TidakDitemukan'
+        '409':
+          description: Stok tidak cukup untuk pengurangan yang diminta
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://warungibubeti.test/problem/stok-tidak-cukup
+                title: Stok tidak cukup
+                status: 409
+                detail: Stok BRG-001 tinggal 3, tidak bisa dikurangi 5.
+                instance: /api/v1/produk/BRG-001/penyesuaian-stok
+                stok_tersedia: 3
+        '422':
+          $ref: '#/components/responses/ValidasiGagal'
+components:
+  parameters:
+    Sku:
+      name: sku
+      in: path
+      required: true
+      description: Kode unik produk, misalnya BRG-001
+      schema:
+        type: string
+        pattern: '^[A-Z]{3}-[0-9]{3}$'
+  schemas:
+    Produk:
+      type: object
+      required: [sku, nama, harga, stok, diperbarui_pada]
+      properties:
+        sku:
+          type: string
+          example: BRG-001
+        nama:
+          type: string
+          example: Beras Pandan Wangi 5kg
+        harga:
+          type: integer
+          minimum: 0
+          description: Harga dalam rupiah, tanpa desimal
+          example: 75000
+        stok:
+          type: integer
+          minimum: 0
+          example: 10
+        diperbarui_pada:
+          type: string
+          format: date-time
+    ProdukTunggal:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Produk'
+    ProdukBaru:
+      type: object
+      required: [sku, nama, harga]
+      properties:
+        sku:
+          type: string
+          pattern: '^[A-Z]{3}-[0-9]{3}$'
+          example: BRG-001
+        nama:
+          type: string
+          maxLength: 120
+          example: Beras Pandan Wangi 5kg
+        harga:
+          type: integer
+          minimum: 0
+          example: 75000
+        stok:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 10
+    Problem:
+      type: object
+      description: Problem Details sesuai RFC 9457
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+        errors:
+          type: object
+          description: Rincian galat validasi per field (anggota tambahan)
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        stok_tersedia:
+          type: integer
+          description: Stok yang masih tersedia saat galat 409 terjadi
+    PenyesuaianStok:
+      type: object
+      required: [perubahan, alasan]
+      properties:
+        perubahan:
+          type: integer
+          not:
+            const: 0
+          example: -2
+        alasan:
+          type: string
+          enum: [penjualan, restok, koreksi]
+          example: penjualan
+  responses:
+    TidakDitemukan:
+      description: Produk dengan SKU tersebut tidak ada
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ValidasiGagal:
+      description: Isi permintaan tidak sesuai kontrak
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
