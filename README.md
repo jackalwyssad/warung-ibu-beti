@@ -31,131 +31,134 @@ Repositori ini mengimplementasikan sistem backend terintegrasi untuk **Warung Ib
 
 ## 🏗️ 1. Diagram Arsitektur & Topologi Sistem
 
-Arsitektur sistem memisahkan interaksi pengguna/pembeli dan proses transaksi kasir yang sinkron dengan proses analitik/pembukuan dan notifikasi yang asinkron:
+Alur arsitektur sistem disusun berurutan dari kiri ke kanan (**Klien $\rightarrow$ API $\rightarrow$ RabbitMQ Broker $\rightarrow$ Konsumen & Pembukuan**) agar arah dan tujuannya sangat mudah dipahami:
 
 ```mermaid
-flowchart TD
-    subgraph Pengguna ["Pelanggan & Antarmuka Klien"]
+flowchart LR
+    %% Definisi Kolom Subgraf Berurutan dari Kiri ke Kanan
+    subgraph S1 ["1. Klien & Pengguna"]
+        direction TB
         Pembeli["👤 Pembeli / Pelanggan"]
-        Kasir["💻 Aplikasi Kasir / POS"]
-        BotWA["📱 Bot WhatsApp Pelanggan"]
-        Swagger["📑 Swagger UI (Port 8082)"]
+        Kasir["💻 Kasir (POS)"]
+        BotWA["📱 Bot WhatsApp"]
     end
 
-    subgraph CoreService ["Layanan Inti: Katalog & Stok (Port 8000)"]
-        API["REST API Controller<br/>(ProdukController)"]
-        DB[("MySQL Database<br/>Table: produk")]
-        Event["Domain Event:<br/>StokDisesuaikan"]
-        Publisher["RabbitPublisher"]
-        QueueWorker["Laravel Queue Worker<br/>(SinkronkanStokWhatsApp)"]
+    subgraph S2 ["2. Layanan Inti (API & DB)"]
+        direction TB
+        API["⚙️ REST API Laravel<br/>(Port 8000)"]
+        DB[("🗄️ MySQL: produk<br/>(Pessimistic Lock)")]
+        Worker["🔄 Background Worker<br/>(Sinkron WhatsApp)"]
     end
 
-    subgraph Broker ["Message Broker: RabbitMQ (Port 5674 / 15674)"]
-        ExEvents[["Topic Exchange:<br/>warung.events"]]
-        ExDLX[["Fanout DLX:<br/>warung.dlx"]]
-        
-        QPenjualan[("Queue: pembukuan.penjualan<br/>(x-dead-letter: warung.dlx)")]
-        QNotif[("Queue: notifikasi.stok")]
-        QDLQ[("Queue: pembukuan.penjualan.dlq")]
-        QWA[("Queue: notifikasi-wa")]
+    subgraph S3 ["3. Message Broker (RabbitMQ)"]
+        direction TB
+        ExEvents[["📢 Topic Exchange:<br/>warung.events"]]
+        QPenjualan[("📥 Antrean:<br/>pembukuan.penjualan")]
+        QNotif[("📥 Antrean:<br/>notifikasi.stok")]
+        QWA[("📥 Antrean:<br/>notifikasi-wa")]
+        ExDLX[["⚠️ Fanout DLX:<br/>warung.dlx"]]
+        QDLQ[("🛑 Antrean DLQ:<br/>pembukuan.penjualan.dlq")]
     end
 
-    subgraph SubSistem ["Layanan Konsumen & Integrasi"]
-        ConsPembukuan["Consumer Pembukuan<br/>(pembukuan:konsumsi)"]
-        DBJurnal[("MySQL Database<br/>Table: jurnal_penjualan")]
-        ConsNotif["Consumer Notifikasi<br/>(notifikasi:stok)"]
-        Alert["Alert WhatsApp / Layar Kasir<br/>(Peringatan Stok Menipis)"]
+    subgraph S4 ["4. Konsumen & Output"]
+        direction TB
+        ConsBuku["📑 Consumer Pembukuan<br/>(CatatPenjualan)"]
+        DBJurnal[("💰 MySQL:<br/>jurnal_penjualan")]
+        ConsNotif["🔔 Consumer Notifikasi<br/>(Cek Stok Menipis)"]
+        Alert["⚠️ Peringatan Stok!"]
     end
 
-    %% Flow Klien / Pembeli
-    Pembeli -->|1a. Belanja langsung di warung| Kasir
-    Pembeli -->|1b. Pesan barang via chat| BotWA
-    Kasir -->|HTTP POST penyesuaian-stok| API
-    BotWA -->|HTTP POST penyesuaian-stok| API
-    Swagger -->|Uji Coba Interaktif| API
+    %% Hubungan Kolom 1 ke Kolom 2
+    Pembeli -->|1a. Belanja langsung| Kasir
+    Pembeli -->|1b. Pesan online| BotWA
+    Kasir -->|2a. POST penyesuaian-stok| API
+    BotWA -->|2b. POST penyesuaian-stok| API
+    API <-->|3. Update stok atomik| DB
 
-    %% Flow REST & DB
-    API -->|lockForUpdate & Update| DB
-    API -->|Dispatch| Event
-    Event --> Publisher
-    Publisher -->|Publish JSON & message_id| ExEvents
+    %% Hubungan Kolom 2 ke Kolom 3
+    API -->|4a. Terbitkan Domain Event| ExEvents
+    API -->|4b. Antrekan Sync WA| QWA
+    QWA --> Worker
 
-    %% Queue Job
-    API -->|Push background job| QWA
-    QWA --> QueueWorker
-
-    %% Routing RabbitMQ
-    ExEvents -->|Routing Key: stok.penjualan| QPenjualan
-    ExEvents -->|Routing Key: stok.*| QNotif
-    QPenjualan -.->|NACK / Reject / Rusak| ExDLX
+    %% Routing di dalam Broker (Kolom 3)
+    ExEvents -->|Routing: stok.penjualan| QPenjualan
+    ExEvents -->|Routing: stok.*| QNotif
+    QPenjualan -.->|Pesan Rusak / NACK| ExDLX
     ExDLX --> QDLQ
 
-    %% Consumer
-    QPenjualan --> ConsPembukuan
-    ConsPembukuan -->|firstOrCreate by message_id| DBJurnal
-    QNotif --> ConsNotif
-    ConsNotif -->|Cek batas stok| Alert
+    %% Hubungan Kolom 3 ke Kolom 4
+    QPenjualan -->|5a. Konsumsi pesan| ConsBuku
+    ConsBuku -->|6a. Simpan idempoten| DBJurnal
+    QNotif -->|5b. Konsumsi pesan| ConsNotif
+    ConsNotif -->|6b. Jika stok tipis| Alert
 ```
 
 ---
 
 ## 🔄 2. Diagram Alur Transaksi & Messaging (Sequence Diagram)
 
-Diagram berikut mengilustrasikan siklus lengkap dari **Pembeli** bertransaksi di kasir hingga mutasi stok, respons ke pembeli, pencatatan otomatis ke jurnal pembukuan, dan notifikasi stok:
+Diagram berikut membagi alur transaksi menjadi **4 Tahapan Jelas** dengan penomoran urut langkah:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Pembeli as Pembeli / Pelanggan
-    actor Kasir as Kasir / POS
-    participant API as REST API (Laravel)
-    participant DB as MySQL (produk)
-    participant RMQ as RabbitMQ (warung.events)
-    participant ConsBuku as Consumer Pembukuan
-    participant Jurnal as MySQL (jurnal_penjualan)
-    participant ConsNotif as Consumer Notifikasi
+    actor Pembeli as 👤 Pembeli
+    actor Kasir as 💻 Kasir
+    participant API as ⚙️ REST API
+    participant DB as 🗄️ Database
+    participant RMQ as 📢 RabbitMQ
+    participant Worker as 📑 Consumer Pembukuan
+    participant Jurnal as 💰 Jurnal Penjualan
+    participant Notif as 🔔 Consumer Notifikasi
 
-    Note over Pembeli,Kasir: Skenario 1: Transaksi Penjualan Barang
-    Pembeli->>Kasir: Membeli barang (misal: 3 pcs Indomie)
-    activate Kasir
-    Kasir->>API: POST /api/v1/produk/{sku}/penyesuaian-stok<br/>(perubahan: -3, alasan: penjualan, referensi: TRX-101)
-    
+    rect rgb(240, 248, 255)
+    Note over Pembeli,DB: TAHAP 1: Transaksi Kasir (Sinkron & Atomik)
+    Pembeli->>Kasir: 1. Beli barang (contoh: 3 pcs Indomie)
+    Kasir->>API: 2. Request POST penyesuaian-stok (-3)
     activate API
-    API->>DB: BEGIN TRANSACTION dan SELECT FOR UPDATE
-    alt Stok Cukup (Stok 10 menjadi 7)
-        API->>DB: UPDATE produk stok berkurang 3 dan COMMIT
-        API->>RMQ: Publish Event (Routing Key: stok.penjualan)<br/>Payload: sku, perubahan, alasan, stok_sesudah: 7, message_id
-        API-->>Kasir: HTTP 200 OK (Data Produk dan Stok Terkini)
-        Kasir-->>Pembeli: Serahkan struk belanja dan barang
-    else Stok Kurang (Stok 2 tidak cukup untuk pengurangan 3)
-        API->>DB: ROLLBACK
-        API-->>Kasir: HTTP 409 Conflict (RFC 9457 Problem Details)
-        Kasir-->>Pembeli: Informasikan bahwa stok tidak mencukupi
+    API->>DB: 3. Kunci baris data (SELECT FOR UPDATE)
+    alt Stok Cukup
+        API->>DB: 4. Kurangi stok dan simpan (COMMIT)
+        API-->>Kasir: 5. Response 200 OK (Stok Berhasil Berkurang)
+        Kasir-->>Pembeli: 6. Serahkan barang dan struk belanja
+    else Stok Tidak Cukup
+        API->>DB: Batalkan transaksi (ROLLBACK)
+        API-->>Kasir: 5. Response 409 Conflict (Stok Kurang)
+        Kasir-->>Pembeli: 6. Beritahu pembeli stok tidak mencukupi
     end
-    deactivate API
-    deactivate Kasir
+    end
 
-    par Pembukuan Otomatis
-        RMQ->>ConsBuku: Deliver message (stok.penjualan)
-        activate ConsBuku
-        ConsBuku->>Jurnal: Cek dan Simpan (firstOrCreate message_id)
-        alt Pesan Valid dan Belum Dicatat
-            Jurnal-->>ConsBuku: Row tersimpan
-            ConsBuku->>RMQ: basic_ack (Hapus dari antrean)
-        else Pesan Duplikat (Idempoten)
-            ConsBuku->>RMQ: basic_ack (Abaikan dan ACK)
-        else Pesan Korup atau Format Salah
-            ConsBuku->>RMQ: basic_nack(requeue=false) dialihkan ke DLQ
-        end
-        deactivate ConsBuku
-    and Notifikasi Stok Menipis
-        RMQ->>ConsNotif: Deliver message (stok.*)
-        activate ConsNotif
-        opt Stok Sesudah Kurang Dari Batas Minimum
-            ConsNotif->>ConsNotif: Cetak Notifikasi Realtime / Alert Peringatan
-        end
-        ConsNotif->>RMQ: basic_ack
-        deactivate ConsNotif
+    rect rgb(255, 250, 240)
+    Note over API,RMQ: TAHAP 2: Penerbitan Event ke Broker
+    API->>RMQ: 7. Publish Event StokDisesuaikan ke warung.events
+    deactivate API
+    end
+
+    rect rgb(245, 255, 245)
+    Note over RMQ,Jurnal: TAHAP 3: Pembukuan Otomatis (Asinkron)
+    RMQ->>Worker: 8. Teruskan pesan ke antrean pembukuan.penjualan
+    activate Worker
+    Worker->>Jurnal: 9. Cek message_id dan simpan penjualan
+    alt Belum Ada (Valid)
+        Jurnal-->>Worker: Data berhasil tersimpan
+        Worker->>RMQ: 10. Konfirmasi selesai (basic_ack)
+    else Duplikat (Pernah Diterima)
+        Worker->>RMQ: 10. Abaikan duplikat dan konfirmasi (basic_ack)
+    else Format Rusak / Gagal
+        Worker->>RMQ: 10. Tolak pesan (basic_nack dialihkan ke DLQ)
+    end
+    deactivate Worker
+    end
+
+    rect rgb(255, 245, 245)
+    Note over RMQ,Notif: TAHAP 4: Peringatan Stok Menipis (Asinkron)
+    RMQ->>Notif: 11. Teruskan pesan ke antrean notifikasi.stok
+    activate Notif
+    opt Sisa Stok di Bawah Batas Minimum
+        Notif->>Notif: 12. Cetak Peringatan Stok Menipis di Layar
+    end
+    Notif->>RMQ: 13. Konfirmasi pesan (basic_ack)
+    deactivate Notif
     end
 ```
 
@@ -165,16 +168,16 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start([Pesan Diterima Consumer]) --> ParseJSON{Validasi Format JSON}
+    Start([1. Pesan Diterima Consumer]) --> ParseJSON{2. Validasi Format JSON?}
     
-    ParseJSON -- Tidak Valid / Rusak --> NackDLQ["basic_nack(requeue: false)"]
+    ParseJSON -- Format Tidak Valid / Rusak --> NackDLQ["basic_nack(requeue: false)"]
     NackDLQ --> DLX["Exchange: warung.dlx"]
     DLX --> QueueDLQ[("Queue: pembukuan.penjualan.dlq<br/>(Tersimpan untuk Audit / Replay)")]
     
-    ParseJSON -- Valid --> CekMsgId{"Cari message_id<br/>di jurnal_penjualan"}
-    CekMsgId -- Sudah Ada (Duplikat) --> AckDup["Log: Pesan duplikat dilewati<br/>(Idempoten)<br/>basic_ack()"]
-    CekMsgId -- Belum Ada --> InsertDB["Insert ke jurnal_penjualan<br/>(sku, jumlah, total, message_id)"]
-    InsertDB --> AckSukses["basic_ack()"]
+    ParseJSON -- Format Valid --> CekMsgId{"3. Cari message_id<br/>di tabel jurnal_penjualan?"}
+    CekMsgId -- Sudah Ada (Pesan Duplikat) --> AckDup["Log: Pesan duplikat dilewati (Idempoten)<br/>basic_ack()"]
+    CekMsgId -- Belum Ada (Pesan Baru) --> InsertDB["4. Insert ke jurnal_penjualan<br/>(sku, jumlah, total, message_id)"]
+    InsertDB --> AckSukses["5. basic_ack() (Hapus dari antrean)"]
 ```
 
 ---
