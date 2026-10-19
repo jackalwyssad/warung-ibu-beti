@@ -12,6 +12,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('pelanggan_id')->constrained('pelanggan')->cascadeOnDelete();
             $table->string('id_transaksi_kasbon', 64)->unique(); // Idempotency key
+            $table->string('tipe', 20)->default('pinjam'); // pinjam (ambil utang), bayar (pelunasan / cicilan)
             $table->unsignedBigInteger('nominal');
             $table->string('keterangan', 255);
             $table->timestamps();

@@ -11,9 +11,10 @@ Route::prefix('v1')->group(function () {
     Route::get('/barang/{barang:kode_barang}', [BarangController::class, 'show']);
     Route::post('/barang/{barang:kode_barang}/catat-transaksi', [BarangController::class, 'catatTransaksi']);
 
-    // Manajemen Pelanggan & Fitur Khas Kasbon Warung
+    // Manajemen Pelanggan, Kasbon (Utang Belanja), dan Pelunasan Kasbon
     Route::get('/pelanggan', [PelangganController::class, 'index']);
     Route::post('/pelanggan', [PelangganController::class, 'store']);
     Route::get('/pelanggan/{pelanggan}', [PelangganController::class, 'show']);
     Route::post('/pelanggan/{pelanggan}/kasbon', [PelangganController::class, 'catatKasbon']);
+    Route::post('/pelanggan/{pelanggan}/bayar-kasbon', [PelangganController::class, 'bayarKasbon']);
 });

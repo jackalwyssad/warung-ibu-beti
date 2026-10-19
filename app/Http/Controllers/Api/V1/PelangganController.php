@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Actions\ProsesKasbonPelanggan;
+use App\Actions\ProsesPembayaranKasbon;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\BayarKasbonRequest;
 use App\Http\Requests\CatatKasbonRequest;
 use App\Http\Requests\TambahPelangganRequest;
 use App\Http\Resources\KasbonResource;
@@ -51,5 +53,22 @@ class PelangganController extends Controller
         return (new KasbonResource($kasbon))
             ->response()
             ->setStatusCode(201);
+    }
+
+    // POST /api/v1/pelanggan/{pelanggan}/bayar-kasbon
+    public function bayarKasbon(BayarKasbonRequest $request, Pelanggan $pelanggan, ProsesPembayaranKasbon $action)
+    {
+        $idempotencyKey = $request->header('Idempotency-Key');
+
+        $pembayaran = $action->execute(
+            $pelanggan,
+            $request->integer('nominal'),
+            $request->input('keterangan'),
+            $idempotencyKey
+        );
+
+        return (new KasbonResource($pembayaran))
+            ->response()
+            ->setStatusCode(200);
     }
 }

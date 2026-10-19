@@ -204,6 +204,67 @@ paths:
         '404':
           $ref: '#/components/responses/PelangganTidakDitemukan'
 
+  /v1/pelanggan/{id}/bayar-kasbon:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID unik pelanggan
+        schema:
+          type: integer
+        example: 1
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Kasbon]
+      operationId: bayarKasbonPelanggan
+      summary: Mencatat pembayaran / cicilan kasbon pelanggan
+      description: |
+        Mengurangi total utang kasbon pelanggan.
+        Aturan bisnis: Nominal pembayaran tidak boleh melebihi sisa kasbon aktif (total kasbon tidak boleh minus < 0).
+        Jika pembayaran melebihi utang, sistem menolak dengan 409 Conflict Problem Details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nominal]
+              properties:
+                nominal:
+                  type: integer
+                  minimum: 1000
+                  example: 50000
+                keterangan:
+                  type: string
+                  maxLength: 255
+                  example: Cicilan kasbon gajian minggu ke-3
+      responses:
+        '200':
+          description: Pembayaran kasbon berhasil dicatat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KasbonTunggal'
+        '404':
+          $ref: '#/components/responses/PelangganTidakDitemukan'
+        '409':
+          description: Pembayaran melebihi total kasbon aktif (tidak boleh minus)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://warungibubeti.test/problem/pembayaran-kasbon-melebihi-utang
+                title: Pembayaran Melebihi Utang Kasbon
+                status: 409
+                detail: Pembayaran ditolak. Pelanggan Pak Joko hanya memiliki kasbon aktif sebesar Rp 30.000. Pembayaran Rp 50.000 melebihi utang.
+                instance: /api/v1/pelanggan/1/bayar-kasbon
+                pelanggan_id: 1
+                kasbon_aktif: 30000
+                nominal_bayar: 50000
+        '422':
+          $ref: '#/components/responses/ValidasiGagal'
+
   /v1/pelanggan/{id}/kasbon:
     parameters:
       - name: id

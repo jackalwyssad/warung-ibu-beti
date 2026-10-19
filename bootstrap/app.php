@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\BatasKasbonTerlampaui;
+use App\Exceptions\PembayaranKasbonMelebihiUtang;
 use App\Exceptions\PersediaanSembakoDefisit;
 use App\Http\Problem;
 use Illuminate\Foundation\Application;
@@ -64,7 +65,7 @@ return Application::configure(basePath: dirname(__DIR__))
             );
         });
 
-        // 409 — Batas kasbon terlampaui (Fitur Khas Warung)
+        // 409 — Batas kasbon terlampaui
         $exceptions->render(function (BatasKasbonTerlampaui $e, Request $request) {
             return Problem::response(
                 $request,
@@ -76,6 +77,22 @@ return Application::configure(basePath: dirname(__DIR__))
                     'pelanggan_id' => $e->pelangganId,
                     'kasbon_aktif' => $e->kasbonSaatIni,
                     'limit_kasbon' => $e->limitKasbon,
+                ]
+            );
+        });
+
+        // 409 — Pembayaran kasbon melebihi utang (tidak boleh minus)
+        $exceptions->render(function (PembayaranKasbonMelebihiUtang $e, Request $request) {
+            return Problem::response(
+                $request,
+                409,
+                'pembayaran-kasbon-melebihi-utang',
+                'Pembayaran Melebihi Utang Kasbon',
+                $e->getMessage(),
+                [
+                    'pelanggan_id' => $e->pelangganId,
+                    'kasbon_aktif' => $e->kasbonSaatIni,
+                    'nominal_bayar' => $e->nominalBayar,
                 ]
             );
         });

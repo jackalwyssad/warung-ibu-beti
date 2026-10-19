@@ -12,6 +12,7 @@ class Kasbon extends Model
     protected $fillable = [
         'pelanggan_id',
         'id_transaksi_kasbon',
+        'tipe',
         'nominal',
         'keterangan',
     ];

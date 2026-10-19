@@ -189,6 +189,7 @@ Sesuai ketentuan **Modul Praktikum 1 (Bab 9 Bagian B)**, layanan backend Warung 
 | **Daftar Pelanggan** | `GET /api/v1/pelanggan` | *(Tanpa request body)* | `200 OK` | — |
 | **Pendaftaran Pelanggan** | `POST /api/v1/pelanggan` | `nama`, opsional: `nomor_wa`, `limit_kasbon` | `201 Created` + `Location` | `422 Unprocessable Content` |
 | **Catat Kasbon Warung** | `POST /api/v1/pelanggan/{id}/kasbon` | `nominal` (min 1000), `keterangan` (nama barang belanja tempo) | `201 Created` | `404 Not Found`, `409 Conflict`, `422 Unprocessable Content` |
+| **Bayar / Cicil Kasbon** | `POST /api/v1/pelanggan/{id}/bayar-kasbon` | `nominal` (min 1000), opsional: `keterangan` | `200 OK` | `404 Not Found`, `409 Conflict`, `422 Unprocessable Content` |
 
 ### ⚠️ Aturan Bisnis Galat 4xx Selain 422:
 1. **Status Code:** `409 Conflict` (Format: `application/problem+json`).
@@ -198,6 +199,10 @@ Sesuai ketentuan **Modul Praktikum 1 (Bab 9 Bagian B)**, layanan backend Warung 
 3. **Kasus 2: Limit Kasbon Pelanggan Terlampaui (`BatasKasbonTerlampaui`)**
    - Terjadi saat pelanggan mengajukan kasbon yang akumulasinya melebihi limit kredit yang disetujui warung.
    - Respons menyertakan URI `https://warungibubeti.test/problem/batas-kasbon-terlampaui` beserta `pelanggan_id`, `kasbon_aktif`, dan `limit_kasbon`.
+4. **Kasus 3: Pembayaran Kasbon Melebihi Utang Aktif (`PembayaranKasbonMelebihiUtang`)**
+   - Terjadi saat kasir memasukkan pembayaran/cicilan kasbon dengan nominal yang lebih besar dari sisa utang aktif pelanggan.
+   - Aturan bisnis mutlak: **saldo utang kasbon pelanggan tidak boleh sampai bernilai negatif / minus (< 0)**.
+   - Transaksi ditolak dengan kode status `409 Conflict` (URI `https://warungibubeti.test/problem/pembayaran-kasbon-melebihi-utang`) yang menyertakan informasi `pelanggan_id`, `kasbon_aktif`, dan `nominal_bayar`.
 
 ---
 
@@ -327,9 +332,9 @@ Semua skenario pengujian REST API v1.1.0, transaksi kasir, limit kasbon pelangga
 ```bash
 ./vendor/bin/sail artisan test
 ```
-*Hasil:* **15 passed (81 assertions)** — 100% Hijau.
+*Hasil:* **18 passed (100 assertions)** — 100% Hijau.
 - `BarangApiTest`: 6 tests (filter, margin persen, tambah 201, 404, 409 defisit, 422).
-- `KasbonApiTest`: 3 tests (catat kasbon 201, tolak limit 409, idempotensi utang).
+- `KasbonApiTest`: 6 tests (catat kasbon 201, tolak limit 409, bayar kasbon 200, tolak bayar melebihi utang 409 [anti-minus], idempotensi utang & bayar).
 - `OutboxPatternTest`: 1 test (verifikasi event outbox terbit ke RabbitMQ).
 - `BukuKasConsumerTest`: 3 tests (perhitungan laba kotor, agregasi rekap harian, handling DLQ).
 - Unit & Base: 2 tests.
@@ -364,4 +369,4 @@ Berdasarkan rubrik penilaian RPS *"Layanan berjalan benar dan pesan terkirim ses
 | 7 | Pesan tidak valid dialihkan ke Dead Letter Queue (DLQ), bukan dibuang diam-diam atau berputar tanpa akhir | Antrean `kasir.buku-kas` dikonfigurasi dengan argumen `x-dead-letter-exchange: warung.sembako.dlx` menuju `warung.audit.dlq` | ✅ Terpenuhi |
 | 8 | Skenario uji point-to-point: pesan tersimpan ketika consumer mati dan diproses ketika menyala | Teruji tuntas pada Skenario Uji 1 (tabel hasil uji terdokumentasi di atas) | ✅ Terpenuhi |
 | 9 | Skenario uji publish-subscribe: dua consumer menerima salinan event yang sama sesuai binding-nya | Teruji tuntas pada Skenario Uji 2 (`kasir.buku-kas` dan `gudang.stok-kritis`) | ✅ Terpenuhi |
-| 10 | Seluruh test (`sail artisan test`) lulus di setiap proyek | 15 automated feature tests lulus 100% (*81 assertions green*) di PHPUnit | ✅ Terpenuhi |
+| 10 | Seluruh test (`sail artisan test`) lulus di setiap proyek | 18 automated feature tests lulus 100% (*100 assertions green*) di PHPUnit | ✅ Terpenuhi |
