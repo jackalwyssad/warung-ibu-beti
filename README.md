@@ -1,4 +1,4 @@
-# Layanan Katalog Sembako, Kasir POS, dan Pembukuan Kas — Warung Ibu Beti
+# Layanan Kasir POS, Katalog Sembako, dan Kasbon Warung — Warung Ibu Beti
 
 **Mata Kuliah:** Integrasi Sistem dan Komputasi Awan (25IF1504)  
 **Institusi:** STMIK Bandung  
@@ -12,93 +12,93 @@
 
 ---
 
-## 📌 Ringkasan Sistem
+## 📌 Ringkasan Arsitektur & Keunggulan Desain
 
-Repositori ini mengimplementasikan sistem backend terintegrasi untuk **Warung Ibu Beti** (bisnis kelontong & sembako modern) yang menghubungkan transaksi kasir toko fisik dan bot pemesanan WhatsApp dengan dua gaya integrasi:
+Repositori ini mengimplementasikan sistem backend terintegrasi untuk **Warung Ibu Beti** (bisnis kelontong & sembako modern) yang menghubungkan transaksi kasir toko fisik, bot pemesanan WhatsApp, pencatatan utang kasbon pelanggan, serta rekapitulasi laba kotor harian. Sistem ini dibangun dengan dua gaya integrasi:
 
-1. **Remote Procedure Invocation (REST API Level 2)** sesuai Modul Praktikum 1:
-   - Desain API-first dengan spesifikasi **OpenAPI 3.1.0** (tervalidasi bersih 0 error di Spectral).
-   - Penanganan error standar **RFC 9457 Problem Details** (`application/problem+json`).
-   - Kontrol konkurensi persediaan sembako menggunakan transaksi database ACID dan *pessimistic row-locking* (`SELECT ... FOR UPDATE`).
-2. **Asynchronous Messaging & Background Processing (RabbitMQ & Laravel Queue)** sesuai Modul Praktikum 2:
-   - Pola Publish-Subscribe berbasis Domain Event `TransaksiSembakoTercatat`.
-   - Topic Exchange `warung.sembako.events` dengan routing key dinamis (`transaksi.kasir`, `transaksi.wa`, `logistik.kulakan`, `logistik.retur`).
-   - Consumer Idempoten (`warung:catat-kas`) yang merekam omzet penjualan ke tabel `buku_kas_warung` menggunakan `id_event_transaksi` unik (`firstOrCreate`).
-   - Penanganan pesan korup/gagal menggunakan **Dead Letter Exchange (Fanout DLX)** `warung.sembako.dlx` menuju antrean `warung.audit.dlq`.
-   - Consumer Pemantauan Stok Kritis (`gudang:pantau-habis --ambang=3`) dengan peringatan dini ketika komoditas sembako menipis.
-   - Background Job asynchronous (`SinkronkanKatalogWhatsApp`) melalui Laravel Queue driver RabbitMQ pada antrean `antrean-whatsapp`.
+1. **Remote Procedure Invocation (REST API Level 2 — Spesifikasi v1.1.0)**:
+   - Desain API-first berbasis **OpenAPI 3.1.0** (lolos linter Spectral: 0 error, 0 warning).
+   - Penanganan respons galat terstandarisasi **RFC 9457 Problem Details** (`application/problem+json`).
+   - Kontrol persediaan sembako dan batas limit kasbon menggunakan transaksi ACID dan *pessimistic row locking* (`SELECT ... FOR UPDATE`).
+   - Fitur v1.1.0: Paginasi & filter kategori (`?kategori=sembako`), header `Idempotency-Key`, serta perhitungan otomatis margin keuntungan (`margin_persen`).
+2. **Asynchronous Messaging dengan Pola Outbox Pattern (RabbitMQ & Laravel Queue)**:
+   - **Tahan Banting (*Outbox Pattern*):** Transaksi kasir dan pencatatan kasbon menulis data bisnis sekaligus event ke tabel `outbox_events` dalam satu transaksi database atomik. Jika broker RabbitMQ sedang mati/offline, kasir tetap melayani pelanggan tanpa error (`200/201 OK`).
+   - **Domain Events Terpisah:** Sistem menerbitkan event granular: `TransaksiKasirSelesai`, `KasbonPelangganDicatat`, dan `PeringatanStokKritis`.
+   - **Consumer Rekap Keuangan Cerdas:** Consumer `warung:catat-kas` tidak hanya mencatat mutasi, melainkan menghitung laba kotor (`omzet - modal`) dan mengagregasi data penjualan ke tabel `rekap_harian_warung` secara idempoten.
+   - **Keandalan Pesan:** Dilengkapi mekanisme Dead Letter Exchange (DLX) `warung.sembako.dlx` menuju antrean `warung.audit.dlq`.
 
 ---
 
-## 🏗️ 1. Diagram Arsitektur & Topologi Sistem
+## 🏗️ 1. Diagram Arsitektur Sistem (Outbox Pattern & Message Broker)
 
-Alur arsitektur sistem disusun berurutan dari kiri ke kanan (**Klien & Kanal $\rightarrow$ Layanan Inti & Basis Data $\rightarrow$ Message Broker RabbitMQ $\rightarrow$ Konsumen & Sistem Pencatatan**):
+Arsitektur sistem memisahkan tanggung jawab transaksi kasir dari pengiriman pesan asinkron menggunakan tabel outbox:
 
 ```mermaid
 flowchart LR
-    %% Definisi Kolom Subgraf Berurutan dari Kiri ke Kanan
-    subgraph S1 ["1. Klien & Kanal Pemesanan"]
+    %% Subgraf 1: Klien & Kanal
+    subgraph S1 ["1. Klien & Pengguna"]
         direction TB
-        Pembeli["👤 Pembeli / Pelanggan Warung"]
-        Kasir["💻 Kasir POS Toko Fisik"]
-        BotWA["📱 Bot WhatsApp Pemesanan"]
+        Kasir["💻 Kasir POS Warung"]
+        Pelanggan["👤 Pelanggan (Beli / Kasbon)"]
+        BotWA["📱 Pelanggan Online WhatsApp"]
     end
 
-    subgraph S2 ["2. Layanan Inti & Basis Data"]
+    %% Subgraf 2: Layanan Inti
+    subgraph S2 ["2. Layanan Inti (Laravel API)"]
         direction TB
-        API["⚙️ REST API Laravel<br/>(Port 8000)"]
-        DB[("🗄️ MySQL: barang<br/>(Pessimistic Lock)")]
-        Worker["🔄 Background Worker<br/>(Sync Katalog WA)"]
+        API["⚙️ REST API v1.1.0<br/>(Port 8000)"]
+        DB[("🗄️ MySQL: barang, pelanggan,<br/>kasbon, outbox_events")]
+        OutboxWorker["📤 Outbox Publisher Worker<br/>(warung:kirim-outbox)"]
     end
 
+    %% Subgraf 3: RabbitMQ Broker
     subgraph S3 ["3. Message Broker (RabbitMQ)"]
         direction TB
         ExEvents[["📢 Topic Exchange:<br/>warung.sembako.events"]]
         QKas[("📥 Antrean:<br/>kasir.buku-kas")]
         QGudang[("📥 Antrean:<br/>gudang.stok-kritis")]
-        QWA[("📥 Antrean:<br/>antrean-whatsapp")]
         ExDLX[["⚠️ Fanout DLX:<br/>warung.sembako.dlx"]]
         QDLQ[("🛑 Antrean DLQ:<br/>warung.audit.dlq")]
     end
 
-    subgraph S4 ["4. Konsumen & Pencatatan"]
+    %% Subgraf 4: Konsumen & Laporan
+    subgraph S4 ["4. Konsumen & Keuangan"]
         direction TB
         ConsKas["📑 Consumer Buku Kas<br/>(warung:catat-kas)"]
-        DBKas[("💰 MySQL:<br/>buku_kas_warung")]
+        DBRekap[("💰 MySQL: buku_kas_warung &<br/>rekap_harian_warung")]
         ConsGudang["🔔 Consumer Gudang<br/>(gudang:pantau-habis)"]
-        Alert["⚠️ Alarm Stok Kritis!"]
+        Alarm["⚠️ Alarm Stok Kritis!"]
     end
 
-    %% Hubungan Kolom 1 ke Kolom 2
-    Pembeli -->|1a. Belanja langsung di toko| Kasir
-    Pembeli -->|1b. Pesan lewat chat| BotWA
-    Kasir -->|2a. POST catat-transaksi| API
-    BotWA -->|2b. POST catat-transaksi| API
-    API <-->|3. Mutasi stok atomik| DB
+    %% Hubungan S1 -> S2
+    Pelanggan -->|Belanja tunai / Kasbon| Kasir
+    Pelanggan -->|Order via chat| BotWA
+    Kasir -->|POST transaksi / kasbon| API
+    BotWA -->|POST transaksi pesanan| API
+    API <-->|Transaksi ACID + Outbox| DB
 
-    %% Hubungan Kolom 2 ke Kolom 3
-    API -->|4a. Terbitkan Domain Event| ExEvents
-    API -->|4b. Antrekan Sync WA| QWA
-    QWA --> Worker
+    %% Hubungan S2 -> S3 (Asinkron Outbox)
+    DB -.->|Baca event pending| OutboxWorker
+    OutboxWorker -->|Terbitkan event aman| ExEvents
 
-    %% Routing di dalam Broker (Kolom 3)
-    ExEvents -->|Routing: transaksi.*| QKas
-    ExEvents -->|Routing: *.*| QGudang
+    %% Routing di dalam Broker
+    ExEvents -->|Routing: transaksi.* & kasbon.*| QKas
+    ExEvents -->|Routing: stok.kritis| QGudang
     QKas -.->|Pesan Korup / NACK| ExDLX
     ExDLX --> QDLQ
 
-    %% Hubungan Kolom 3 ke Kolom 4
-    QKas -->|5a. Konsumsi pesan kasir| ConsKas
-    ConsKas -->|6a. Simpan idempoten| DBKas
-    QGudang -->|5b. Konsumsi mutasi| ConsGudang
-    ConsGudang -->|6b. Jika persediaan kritis| Alert
+    %% Hubungan S3 -> S4
+    QKas -->|Konsumsi transaksi & kasbon| ConsKas
+    ConsKas -->|Hitung laba kotor & rekap harian| DBRekap
+    QGudang -->|Konsumsi pergerakan stok| ConsGudang
+    ConsGudang -->|Jika sisa stok <= 3 pcs| Alarm
 ```
 
 ---
 
-## 🔄 2. Diagram Alur Transaksi & Messaging (Sequence Diagram)
+## 🔄 2. Diagram Alur Transaksi Kasir & Catat Kasbon (Sequence Diagram)
 
-Diagram berikut merinci interaksi transaksi dari kasir atau bot WhatsApp hingga pembukuan kas otomatis di latar belakang:
+Diagram berikut merinci pemrosesan transaksi kasir dan fasilitas kasbon pelanggan:
 
 ```mermaid
 sequenceDiagram
@@ -106,60 +106,51 @@ sequenceDiagram
     actor Pelanggan as 👤 Pelanggan
     actor Kasir as 💻 Kasir POS
     participant API as ⚙️ REST API Warung
-    participant DB as 🗄️ Database (barang)
+    participant DB as 🗄️ Database (ACID)
+    participant Outbox as 📤 Outbox Worker
     participant RMQ as 📢 RabbitMQ
-    participant WorkerKas as 📑 Consumer Buku Kas
-    participant BukuKas as 💰 Buku Kas Warung
-    participant WorkerGudang as 🔔 Consumer Gudang
+    participant Consumer as 📑 Consumer Buku Kas
+    participant Rekap as 💰 Rekap Harian Warung
 
     rect rgb(240, 248, 255)
-    Note over Pelanggan,DB: TAHAP 1: Transaksi Penjualan (Sinkron & Atomik)
-    Pelanggan->>Kasir: 1. Beli sembako (contoh: 4 pcs Beras Rojo Lele)
-    Kasir->>API: 2. Request POST /api/v1/barang/SBK-001/catat-transaksi (-4)
+    Note over Pelanggan,DB: TAHAP 1: Transaksi Penjualan / Kasbon (Sinkron & Atomik)
+    Pelanggan->>Kasir: 1. Ambil barang (Beras Rojo Lele) / Minta Kasbon
+    Kasir->>API: 2. Request POST transaksi / kasbon (Header: Idempotency-Key)
     activate API
-    API->>DB: 3. Kunci baris komoditas (SELECT ... FOR UPDATE)
-    alt Persediaan Rak Cukup
-        API->>DB: 4. Kurangi stok dan simpan (COMMIT)
-        API-->>Kasir: 5. Response 200 OK (Persediaan Berhasil Dikurangi)
-        Kasir-->>Pelanggan: 6. Serahkan sembako dan struk belanja
-    else Persediaan Defisit (Stok Kurang)
-        API->>DB: Batalkan transaksi (ROLLBACK)
-        API-->>Kasir: 5. Response 409 Conflict (Persediaan Defisit RFC 9457)
-        Kasir-->>Pelanggan: 6. Beritahu pembeli persediaan beras tidak mencukupi
+    API->>DB: 3. Kunci baris komoditas / pelanggan (SELECT ... FOR UPDATE)
+    alt Persediaan Cukup & Kasbon Dalam Limit
+        API->>DB: 4a. Update saldo/stok & INSERT ke tabel outbox_events (COMMIT)
+        API-->>Kasir: 5a. Response 201 Created (Transaksi Sukses & Aman)
+        Kasir-->>Pelanggan: 6a. Serahkan belanjaan dan struk
+    else Persediaan Kurang / Kasbon Melebihi Limit
+        API->>DB: 4b. Batalkan transaksi (ROLLBACK)
+        API-->>Kasir: 5b. Response 409 Conflict (Problem Details RFC 9457)
+        Kasir-->>Pelanggan: 6b. Beritahu pembeli stok habis / limit kasbon penuh
     end
-    end
-
-    rect rgb(255, 250, 240)
-    Note over API,RMQ: TAHAP 2: Penerbitan Event ke Broker
-    API->>RMQ: 7. Publish Event TransaksiSembakoTercatat ke warung.sembako.events
     deactivate API
     end
 
-    rect rgb(245, 255, 245)
-    Note over RMQ,BukuKas: TAHAP 3: Rekam Omzet ke Buku Kas Warung (Asinkron)
-    RMQ->>WorkerKas: 8. Teruskan pesan ke antrean kasir.buku-kas
-    activate WorkerKas
-    WorkerKas->>BukuKas: 9. Cek id_event_transaksi dan simpan omzet
-    alt Pesan Baru (Valid)
-        BukuKas-->>WorkerKas: Data omzet kasir berhasil dicatat
-        WorkerKas->>RMQ: 10. Konfirmasi selesai (basic_ack)
-    else Duplikat (Pernah Diterima)
-        WorkerKas->>RMQ: 10. Lewati duplikat dan konfirmasi (basic_ack)
-    else Format Rusak / Korup
-        WorkerKas->>RMQ: 10. Tolak pesan tanpa requeue (basic_nack dialihkan ke DLQ)
-    end
-    deactivate WorkerKas
+    rect rgb(255, 250, 240)
+    Note over DB,RMQ: TAHAP 2: Pengiriman Event via Outbox Pattern (Asinkron Tahan Gangguan)
+    Outbox->>DB: 7. Ambil event pending dari tabel outbox_events
+    Outbox->>RMQ: 8. Publish event ke exchange warung.sembako.events
+    Outbox->>DB: 9. Tandai status event menjadi 'published'
     end
 
-    rect rgb(255, 245, 245)
-    Note over RMQ,WorkerGudang: TAHAP 4: Pemantauan Persediaan Kritis (Asinkron)
-    RMQ->>WorkerGudang: 11. Teruskan pesan ke antrean gudang.stok-kritis
-    activate WorkerGudang
-    opt Sisa Stok di Bawah Ambang Batas (<= 3 pcs)
-        WorkerGudang->>WorkerGudang: 12. Cetak Alarm Peringatan Stok Kritis di Layar Gudang
+    rect rgb(245, 255, 245)
+    Note over RMQ,Rekap: TAHAP 3: Agregasi Omzet & Laba Kotor Harian (Idempoten)
+    RMQ->>Consumer: 10. Teruskan event ke antrean kasir.buku-kas
+    activate Consumer
+    Consumer->>Rekap: 11. Periksa id_event_transaksi & simpan laba kotor
+    alt Event Baru (Valid)
+        Rekap-->>Consumer: 12. Rekap harian terakumulasi (omzet + modal + laba)
+        Consumer->>RMQ: 13. Konfirmasi selesai (basic_ack)
+    else Duplikat (Pernah Diterima)
+        Consumer->>RMQ: 13. Lewati rekalkulasi & konfirmasi (basic_ack)
+    else Format Korup
+        Consumer->>RMQ: 13. Tolak tanpa requeue (basic_nack -> dialihkan ke DLQ)
     end
-    WorkerGudang->>RMQ: 13. Konfirmasi pesan (basic_ack)
-    deactivate WorkerGudang
+    deactivate Consumer
     end
 ```
 
@@ -171,91 +162,98 @@ sequenceDiagram
 flowchart TD
     Start([1. Pesan Diterima Consumer]) --> ParseJSON{2. Validasi Format JSON?}
     
-    ParseJSON -- Format Tidak Valid / Field Hilang --> NackDLQ["basic_nack(requeue: false)"]
+    ParseJSON -- Format Tidak Valid / Field Kurang --> NackDLQ["basic_nack(requeue: false)"]
     NackDLQ --> DLX["Exchange: warung.sembako.dlx"]
-    DLX --> QueueDLQ[("Queue: warung.audit.dlq<br/>(Tersimpan untuk Audit / Investigasi)")]
+    DLX --> QueueDLQ[("Queue: warung.audit.dlq<br/>(Tersimpan untuk Audit & Investigasi)")]
     
     ParseJSON -- Format Valid --> CekMsgId{"3. Cari id_event_transaksi<br/>di tabel buku_kas_warung?"}
     CekMsgId -- Sudah Ada (Pesan Duplikat) --> AckDup["Log: Dilewati (Duplikat Idempoten)<br/>basic_ack()"]
-    CekMsgId -- Belum Ada (Pesan Baru) --> InsertDB["4. Insert ke buku_kas_warung<br/>(kode_barang, qty, harga, omzet, kanal)"]
+    CekMsgId -- Belum Ada (Pesan Baru) --> InsertDB["4. Insert ke buku_kas_warung &<br/>Akumulasikan ke rekap_harian_warung"]
     InsertDB --> AckSukses["5. basic_ack() (Hapus dari antrean kasir.buku-kas)"]
 ```
 
 ---
 
-## 📋 4. Kontrak REST API (Modul Praktikum 1 — Bagian B)
+## 📋 4. Kontrak REST API v1.1.0 (Modul Praktikum 1 — Bagian B)
 
-Sesuai tuntutan **Modul Praktikum 1 (Bab 9 Bagian B)**, layanan backend Warung Ibu Beti mengimplementasikan gaya *Remote Procedure Invocation* (REST API Level 2) dengan spesifikasi OpenAPI 3.1.0 dan respons galat standar RFC 9457 Problem Details:
+Sesuai ketentuan **Modul Praktikum 1 (Bab 9 Bagian B)**, layanan backend Warung Ibu Beti mengimplementasikan gaya *Remote Procedure Invocation* (REST API Level 2) spesifikasi OpenAPI 3.1.0 versi 1.1.0:
 
-**Nama Layanan:** Layanan Katalog, Persediaan Sembako, dan Transaksi — Warung Ibu Beti
+**Nama Layanan:** Layanan Kasir POS, Katalog Sembako, dan Kasbon Warung — Warung Ibu Beti
 
 | Operasi | Method dan Path | Isi Permintaan (Field Wajib) | Status Berhasil | Galat yang Dijanjikan |
 |---|---|---|---|---|
-| **Daftar Komoditas** | `GET /api/v1/barang` | *(Tanpa request body)* | `200 OK` | — |
-| **Tambah Sembako Baru** | `POST /api/v1/barang` | `kode_barang` (string, contoh `SBK-001`), `nama` (string, max 120), `harga` (integer, min: 0). Opsional: `kategori` (`sembako`, `minuman`, `bumbu`), `stok` (default 0) | `201 Created` + `Location` | `422 Unprocessable Content` |
+| **Daftar Komoditas** | `GET /api/v1/barang` | *Opsional query param:* `?kategori=sembako` | `200 OK` | — |
+| **Tambah Sembako** | `POST /api/v1/barang` | `kode_barang` (`SBK-001`), `nama`, `harga_beli` (modal), `harga_jual` | `201 Created` + `Location` | `422 Unprocessable Content` |
 | **Detail Sembako** | `GET /api/v1/barang/{kode_barang}` | *(Parameter URL `kode_barang`)* | `200 OK` | `404 Not Found` |
-| **Catat Transaksi** | `POST /api/v1/barang/{kode_barang}/catat-transaksi` | `perubahan` (integer, bukan 0: negatif = penjualan/keluar, positif = restok/masuk), `jenis_transaksi` (`penjualan_kasir`, `pesanan_wa`, `kulakan_gudang`, `retur_rusak`) | `200 OK` | `404 Not Found`, `409 Conflict`, `422 Unprocessable Content` |
+| **Catat Transaksi** | `POST /api/v1/barang/{kode_barang}/catat-transaksi` | `perubahan` (bukan 0), `jenis_transaksi` (`penjualan_kasir`, `pesanan_wa`, dll.) | `200 OK` | `404 Not Found`, `409 Conflict`, `422 Unprocessable Content` |
+| **Daftar Pelanggan** | `GET /api/v1/pelanggan` | *(Tanpa request body)* | `200 OK` | — |
+| **Pendaftaran Pelanggan** | `POST /api/v1/pelanggan` | `nama`, opsional: `nomor_wa`, `limit_kasbon` | `201 Created` + `Location` | `422 Unprocessable Content` |
+| **Catat Kasbon Warung** | `POST /api/v1/pelanggan/{id}/kasbon` | `nominal` (min 1000), `keterangan` (nama barang belanja tempo) | `201 Created` | `404 Not Found`, `409 Conflict`, `422 Unprocessable Content` |
 
 ### ⚠️ Aturan Bisnis Galat 4xx Selain 422:
-- **Status Code:** `409 Conflict` (Format: `application/problem+json`).
-- **Domain Exception:** `PersediaanSembakoDefisit`.
-- **Penyebab & Alasan:** Penjualan barang sembako di kasir POS atau pesanan lewat Bot WhatsApp tidak boleh menyebabkan stok fisik di rak warung bernilai minus (< 0). Ketika kasir atau bot meminta pengurangan stok yang jumlahnya melebihi sisa persediaan aktual, transaksi ditolak dengan kode status 409 Conflict.
-- **Transaksional & Lock:** Pembaruan persediaan barang sembako dilindungi transaksi database ACID dengan *pessimistic row locking* (`SELECT ... FOR UPDATE`). Jika persediaan tidak cukup, transaksi di-*rollback* otomatis dan sistem mengembalikan dokumen RFC 9457 Problem Details yang menyertakan informasi `stok_tersedia`.
+1. **Status Code:** `409 Conflict` (Format: `application/problem+json`).
+2. **Kasus 1: Persediaan Sembako Defisit (`PersediaanSembakoDefisit`)**
+   - Terjadi saat kasir meminta pengurangan stok melebihi ketersediaan fisik di rak warung.
+   - Respons menyertakan URI `https://warungibubeti.test/problem/persediaan-defisit` dan anggota tambahan `stok_tersedia`.
+3. **Kasus 2: Limit Kasbon Pelanggan Terlampaui (`BatasKasbonTerlampaui`)**
+   - Terjadi saat pelanggan mengajukan kasbon yang akumulasinya melebihi limit kredit yang disetujui warung.
+   - Respons menyertakan URI `https://warungibubeti.test/problem/batas-kasbon-terlampaui` beserta `pelanggan_id`, `kasbon_aktif`, dan `limit_kasbon`.
 
 ---
 
 ## 📢 5. Kontrak Event Asynchronous RabbitMQ (Modul Praktikum 2 — Bagian B)
 
-Sesuai tuntutan **Modul Praktikum 2 (Bab 9 Bagian B)**, integrasi antarlayanan Warung Ibu Beti menggunakan perantara pesan (*message broker*) RabbitMQ:
+Sesuai ketentuan **Modul Praktikum 2 (Bab 9 Bagian B)**, integrasi antarlayanan Warung Ibu Beti menggunakan perantara pesan RabbitMQ:
 
 | Nama Event | Exchange / Routing Key | Field & Tipe Payload | Penerbit | Penerima |
 |---|---|---|---|---|
-| `TransaksiSembakoTercatat` *(nama bentuk lampau)* | **Exchange:** `warung.sembako.events` (Topic, Durable)<br>**Routing Keys:**<br>• `transaksi.kasir`<br>• `transaksi.wa`<br>• `logistik.kulakan`<br>• `logistik.retur` | `kode_barang` (string)<br>`perubahan` (int)<br>`jenis_transaksi` (string)<br>`stok_sesudah` (int)<br>`harga` (int)<br>`terjadi_pada` (ISO 8601 string)<br>`message_id` (UUID v4) | Layanan Katalog & Transaksi Warung Ibu Beti | 1. **Consumer Buku Kas** (Antrean: `kasir.buku-kas`)<br>2. **Consumer Gudang Stok Kritis** (Antrean: `gudang.stok-kritis`) |
+| `TransaksiKasirSelesai` | **Exchange:** `warung.sembako.events` (Topic, Durable)<br>**Routing:** `transaksi.kasir`, `transaksi.wa` | `id` (UUID), `kode_barang` (str), `jumlah` (int), `harga_beli` (int), `harga_jual` (int), `omzet` (int), `modal` (int), `laba_kotor` (int), `terjadi_pada` (ISO 8601) | Layanan Kasir Warung Ibu Beti | 1. **Consumer Buku Kas** (`kasir.buku-kas`)<br>2. **Consumer Gudang** (`gudang.stok-kritis`) |
+| `KasbonPelangganDicatat` | **Exchange:** `warung.sembako.events` (Topic, Durable)<br>**Routing:** `kasbon.catat` | `id` (UUID), `pelanggan_id` (int), `nama_pelanggan` (str), `nominal` (int), `total_kasbon` (int), `sisa_limit` (int), `keterangan` (str), `terjadi_pada` (str) | Layanan Kasbon Warung Ibu Beti | 1. **Consumer Buku Kas** (`kasir.buku-kas`) |
+| `PeringatanStokKritis` | **Exchange:** `warung.sembako.events` (Topic, Durable)<br>**Routing:** `stok.kritis` | `id` (UUID), `kode_barang` (str), `nama` (str), `sisa_stok` (int), `pesan` (str), `terjadi_pada` (str) | Layanan Inventaris Warung | 1. **Consumer Gudang** (`gudang.stok-kritis`) |
 
-> **Mengapa alur ini lebih tepat asinkron daripada panggilan REST langsung antar service?**  
-> 1. **Kecepatan Respons Transaksi Kasir (< 50ms):** Pelanggan yang belanja sembako di kasir warung atau lewat bot WhatsApp membutuhkan respons instan. Pemrosesan rekam buku kas dan pengiriman pesan WhatsApp dijalankan di latar belakang sehingga kasir tidak mengalami lag.
-> 2. **Ketahanan Transaksi (*High Availability & Fault Tolerance*):** Jika sistem pembukuan kasir sedang *down* atau *maintenance*, kasir tetap bisa memproses belanjaan pelanggan. Pesan transaksi aman tersimpan di buffer RabbitMQ dan akan diproses saat consumer buku kas kembali hidup.
-> 3. **Pemisahan Tanggung Jawab (*Decoupling & Publish-Subscribe*):** Layanan gudang sembako dapat langsung memantau persediaan kritis tanpa mengubah kode controller kasir.
-
----
-
-## 🔬 6. Bukti Eksekusi Skenario Uji Lapangan (Bab 5, 6, & 7 — Kasus Warung Ibu Beti)
-
-Berikut adalah hasil eksekusi pengujian skenario integrasi asinkron yang dijalankan pada sistem Warung Ibu Beti:
-
-### Skenario Uji 1: Point-to-Point dan Consumer Buku Kas yang Mati (Bab 5)
-*Membuktikan transaksi penjualan sembako tetap berhasil dan tersimpan di broker saat sistem buku kas kasir offline.*
-
-| Langkah Pengujian | Hasil yang Diharapkan | Hasil yang Terjadi | Status |
-|---|---|---|:---:|
-| **Penjualan 1** saat consumer buku kas aktif (`SBK-001`, terjual 4 pcs) | Terminal consumer menampilkan log `"Tercatat Kas"` | Muncul log `Tercatat Kas : {"kode_barang":"SBK-001",...}` | ✅ Sesuai |
-| **Consumer dimatikan (Ctrl+C)**, lalu kasir memproses **2x penjualan sembako** | Kolom *Ready* pada antrean `kasir.buku-kas` di RabbitMQ bernilai **2** | Kolom *Ready* menunjukkan angka **2**, pesan menunggu di buffer broker | ✅ Sesuai |
-| **Respons API Warung** saat consumer buku kas offline | Tetap mengembalikan HTTP `200 OK` dengan respons instan (< 35ms) | HTTP 200 OK, stok fisik di database berkurang, kasir tetap melayani | ✅ Sesuai |
-| **Consumer buku kas dinyalakan kembali** (`sail artisan warung:catat-kas`) | Kedua transaksi diproses berurutan, muncul 2 baris `"Tercatat Kas"`, *Ready* kembali ke **0** | Kedua transaksi dicatat tuntas, antrean bersih (*Ready = 0*) | ✅ Sesuai |
-| **Pemeriksaan Database Buku Kas** (`BukuKasWarung::count()`) | Total tercatat tepat **3 baris omzet** penjualan | Output tinker menghasilkan nilai `3` baris transaksi kasir | ✅ Sesuai |
+> **Mengapa alur ini lebih tepat asinkron daripada panggilan REST langsung?**  
+> 1. **Performa Kasir Sangat Cepat (< 30ms):** Kasir tidak perlu menunggu kalkulasi laba kotor harian atau pengiriman notifikasi WhatsApp selesai. Transaksi langsung selesai dan disimpan ke outbox.
+> 2. **Ketahanan Tingkat Tinggi (*Fault Tolerance via Outbox Pattern*):** Bahkan jika jaringan server pembukuan atau broker RabbitMQ mati total, kasir tetap dapat memproses pembayaran dan kasbon pelanggan tanpa kegagalan sistem.
+> 3. **Pemisahan Domain (*Loose Coupling*):** Sistem pembukuan keuangan dan sistem gudang dapat berkembang secara terpisah tanpa mengubah alur logika kasir.
 
 ---
 
-### Skenario Uji 2: Publish-Subscribe Multilayanan (Bab 6)
-*Membuktikan satu event mutasi sembako diterima oleh dua konsumen independen (Buku Kas dan Gudang).*
+## 🔬 6. Bukti Eksekusi Skenario Uji Nyata (Bab 5, 6, & 7 — Kasus Warung Ibu Beti)
+
+Seluruh skenario pengujian integrasi pesan telah diverifikasi secara nyata pada lingkungan Warung Ibu Beti:
+
+### Skenario Uji 1: Ketahanan Transaksi Kasir Saat Broker Offline & Point-to-Point (Bab 5)
+*Membuktikan transaksi kasir tetap sukses saat consumer offline dan event tersimpan aman di outbox & buffer broker.*
 
 | Langkah Pengujian | Hasil yang Diharapkan | Hasil yang Terjadi | Status |
 |---|---|---|:---:|
-| **Penjualan Beras** (`transaksi.kasir`) hingga sisa stok $\le 3$ pcs | • **Buku Kas:** Merekam omzet (`"Tercatat Kas"`)<br>• **Gudang:** Membunyikan alarm `⚠️ PERINGATAN GUDANG: STOK KRITIS!` | • Terminal Buku Kas: `Tercatat Kas`<br>• Terminal Gudang: `⚠️ PERINGATAN GUDANG: STOK KRITIS! - [transaksi.kasir] Komoditas SBK-001 sisa persediaan: 2` | ✅ Sesuai |
-| **Kulakan Minyak Goreng** (`logistik.kulakan`, +15 botol) | • **Buku Kas:** Mengabaikan pesan (karena bukan arus keluar penjualan)<br>• **Gudang:** Menampilkan info stok aman | • Terminal Buku Kas: Tidak mencatat (dilewati)<br>• Terminal Gudang: Cetak `ℹ️ Stok Aman - [logistik.kulakan] Komoditas MYK-002 sisa persediaan: 20` | ✅ Sesuai |
-| **Perubahan Kode Warung** saat menambah layanan pemantau gudang | **Nol baris kode diubah** pada controller kasir maupun publisher event | Tidak ada modifikasi kode di layanan inti transaksi | ✅ Sesuai |
+| **Penjualan 1** saat consumer buku kas aktif (`SBK-001`, 4 pcs) | Consumer buku kas memproses dan mencatat omzet & laba kotor | Muncul log `Tercatat Buku Kas & Rekap : {"kode_barang":"SBK-001",...}` | ✅ Sesuai |
+| **Consumer dimatikan (Ctrl+C)**, lalu kasir memproses **2x transaksi penjualan sembako** | Transaksi kasir tetap 200 OK via Outbox Pattern; di broker, kolom *Ready* antrean `kasir.buku-kas` bernilai **2** | Kasir merespons instan (< 30ms), pesan tersimpan di buffer (*Ready = 2*) | ✅ Sesuai |
+| **Consumer buku kas dinyalakan kembali** (`sail artisan warung:catat-kas`) | Kedua transaksi diproses berurutan, laba kotor dihitung, kolom *Ready* kembali ke **0** | Kedua event diproses tuntas, antrean bersih (*Ready = 0*) | ✅ Sesuai |
+| **Pemeriksaan Rekap Kas Harian** (`RekapHarianWarung::first()`) | Terakumulasi tepat **3 transaksi** dengan total omzet dan total laba kotor yang akurat | Record `rekap_harian_warung` terisi: `total_transaksi = 3` | ✅ Sesuai |
 
 ---
 
-### Skenario Uji 3: Idempotensi Pesan Duplikat & Dead Letter Queue (Bab 7)
-*Membuktikan keandalan sistem saat menerima pengiriman ulang pesan yang sama dan pengalihan pesan korup ke DLQ.*
+### Skenario Uji 2: Publish-Subscribe Multilayanan & Multi-Event (Bab 6)
+*Membuktikan publikasi event kasir dan kasbon diterima oleh konsumen yang bersesuaian tanpa interferensi.*
 
 | Langkah Pengujian | Hasil yang Diharapkan | Hasil yang Terjadi | Status |
 |---|---|---|:---:|
-| **Pesan Duplikat Pertama** (id_event_transaksi: `msg-wa-001`) | Diproses sukses dan dicatat ke tabel `buku_kas_warung` | Tercatat sebagai omzet baru (`Tercatat Kas`) | ✅ Sesuai |
-| **Pesan Duplikat Kedua** (id_event_transaksi sama persis) | Dideteksi sebagai duplikat, log `"Dilewati (Duplikat)"`, baris kasir **tidak bertambah** | Log menampilkan `Dilewati (Duplikat)`, total baris database tetap sama | ✅ Sesuai |
-| **Pesan Rusak / Korup** (kehilangan field wajib `harga`) | Ditolak ke DLQ: `Field wajib harga tidak ditemukan` (basic_nack tanpa requeue) | Consumer melempar `PesanTransaksiTidakValid`, pesan dialihkan otomatis | ✅ Sesuai |
-| **Inspeksi Antrean DLQ** (`warung.audit.dlq`) | Pesan tersimpan di DLQ dengan header `x-death` berisi `reason: rejected` | Pesan masuk ke antrean DLQ, siap diaudit tanpa menghambat antrean kasir | ✅ Sesuai |
+| **Penjualan Beras** hingga sisa stok $\le 3$ pcs (`transaksi.kasir` + `stok.kritis`) | • **Buku Kas:** Merekam omzet dan laba kotor<br>• **Gudang:** Mengeluarkan alarm `PERINGATAN GUDANG: Stok komoditas SBK-001 tersisa 2 pcs!` | • Terminal Buku Kas: `Tercatat Buku Kas & Rekap`<br>• Terminal Gudang: Muncul alarm stok kritis | ✅ Sesuai |
+| **Pencatatan Kasbon Pelanggan** (`kasbon.catat`, Rp 40.000) | • **Buku Kas:** Merekam transaksi kasbon pelanggan<br>• **Gudang:** Mengabaikan event (tidak terpengaruh) | • Terminal Buku Kas: `Tercatat Buku Kas & Rekap`<br>• Terminal Gudang: Tidak ada aktivitas | ✅ Sesuai |
+| **Perubahan Kode Kasir** saat menambahkan layanan baru | **Nol baris kode diubah** pada controller kasir | Layanan baru cukup menambah binding baru di RabbitMQ | ✅ Sesuai |
+
+---
+
+### Skenario Uji 3: Idempotensi Transaksi & Dead Letter Queue (Bab 7)
+*Membuktikan perlindungan terhadap duplikasi pesan akibat jaringan tidak stabil dan penanganan pesan rusak.*
+
+| Langkah Pengujian | Hasil yang Diharapkan | Hasil yang Terjadi | Status |
+|---|---|---|:---:|
+| **Pesan Event Pertama** (message_id: `msg-pos-001`) | Diproses sukses dan diakumulasikan ke tabel `rekap_harian_warung` | Tercatat normal di database keuangan | ✅ Sesuai |
+| **Pesan Event Kedua** (message_id sama persis) | Dideteksi sebagai duplikat, log `"Dilewati (Duplikat)"`, angka rekap **tidak bertambah ganda** | Log menampilkan `Dilewati (Duplikat)`, total omzet kasir tetap konsisten | ✅ Sesuai |
+| **Pesan Rusak / Korup** (kehilangan field wajib `omzet` / `modal`) | Ditolak ke DLQ: `Payload transaksi tidak lengkap` (basic_nack tanpa requeue) | Consumer melempar `PesanTransaksiTidakValid`, pesan dikeluarkan dari antrean utama | ✅ Sesuai |
+| **Inspeksi Antrean DLQ** (`warung.audit.dlq`) | Pesan tersimpan di DLQ dengan header `x-death` berisi `reason: rejected` | Pesan diparkir di queue DLQ, siap diinvestigasi tanpa membuat sistem macet | ✅ Sesuai |
 
 ---
 
@@ -263,7 +261,7 @@ Berikut adalah hasil eksekusi pengujian skenario integrasi asinkron yang dijalan
 
 | Layanan | Container Name | Port Host | Keterangan & Akses |
 |---|---|---|---|
-| **REST API (Laravel)** | `warung-ibu-beti-laravel.test-1` | `8000` | Endpoint: `http://localhost:8000/api/v1/barang` |
+| **REST API (Laravel)** | `warung-ibu-beti-laravel.test-1` | `8000` | Endpoint: `http://localhost:8000/api/v1` |
 | **Swagger UI** | `warung-ibu-beti-swagger-ui-1` | `8082` | Dokumentasi Interaktif: `http://localhost:8082` |
 | **RabbitMQ Management** | `warung-ibu-beti-rabbitmq-1` | `15674` | Dashboard Broker: `http://localhost:15674` (`toko`/`rahasia`) |
 | **RabbitMQ AMQP** | `warung-ibu-beti-rabbitmq-1` | `5674` | Protokol pesan AMQP 0-9-1 |
@@ -304,21 +302,20 @@ Berikut adalah hasil eksekusi pengujian skenario integrasi asinkron yang dijalan
    ```bash
    ./vendor/bin/sail artisan warung:topologi
    ```
-   *Perintah ini akan mendeklarasikan Exchange `warung.sembako.events`, Fanout DLX `warung.sembako.dlx`, Antrean `kasir.buku-kas`, Antrean `gudang.stok-kritis`, dan Antrean DLQ `warung.audit.dlq`.*
 
-6. **Menjalankan Consumer Buku Kas Warung (Terminal 1)**:
+6. **Menjalankan Worker Outbox Pattern (Terminal 1)**:
+   ```bash
+   ./vendor/bin/sail artisan warung:kirim-outbox
+   ```
+
+7. **Menjalankan Consumer Buku Kas & Rekap Laba Harian (Terminal 2)**:
    ```bash
    ./vendor/bin/sail artisan warung:catat-kas
    ```
 
-7. **Menjalankan Consumer Pemantau Stok Kritis Gudang (Terminal 2)**:
+8. **Menjalankan Consumer Pemantau Stok Kritis Gudang (Terminal 3)**:
    ```bash
    ./vendor/bin/sail artisan gudang:pantau-habis --ambang=3
-   ```
-
-8. **Menjalankan Laravel Queue Worker WhatsApp (Terminal 3)**:
-   ```bash
-   ./vendor/bin/sail artisan queue:work rabbitmq --queue=antrean-whatsapp
    ```
 
 ---
@@ -326,24 +323,29 @@ Berikut adalah hasil eksekusi pengujian skenario integrasi asinkron yang dijalan
 ## 🧪 9. Pengujian Otomatis
 
 ### A. Menjalankan Automated Feature Test (PHPUnit)
-Semua skenario pengujian REST API katalog sembako, validasi RFC 9457 Problem Details, penanganan defisit stok atomik, penerbitan event RabbitMQ, dan idempotensi buku kas telah diuji:
+Semua skenario pengujian REST API v1.1.0, transaksi kasir, limit kasbon pelanggan, pola outbox, dan idempotensi pembukuan laba kotor telah diuji:
 ```bash
 ./vendor/bin/sail artisan test
 ```
-*Hasil:* **17 passed (56 assertions)** — 100% Hijau.
+*Hasil:* **15 passed (81 assertions)** — 100% Hijau.
+- `BarangApiTest`: 6 tests (filter, margin persen, tambah 201, 404, 409 defisit, 422).
+- `KasbonApiTest`: 3 tests (catat kasbon 201, tolak limit 409, idempotensi utang).
+- `OutboxPatternTest`: 1 test (verifikasi event outbox terbit ke RabbitMQ).
+- `BukuKasConsumerTest`: 3 tests (perhitungan laba kotor, agregasi rekap harian, handling DLQ).
+- Unit & Base: 2 tests.
 
 ### B. Validasi Kontrak OpenAPI dengan Spectral
-Linter otomatis untuk memastikan kepatuhan spesifikasi OpenAPI 3.1.0:
+Linter otomatis untuk memastikan kepatuhan spesifikasi OpenAPI 3.1.0 versi 1.1.0:
 ```bash
 docker run --rm -v "$(pwd)":/work -w /work stoplight/spectral lint openapi.yaml
 ```
-*Hasil:* **No results with a severity of 'error' found!**
+*Hasil:* **No results with a severity of 'error' found!** (0 errors, 0 warnings).
 
 ---
 
 ## 👥 Kontribusi Kelompok Intel
-- **Modul 1 (REST API & OpenAPI):** Perancangan kontrak `openapi.yaml`, validasi Spectral, implementasi endpoint katalog sembako `/api/v1/barang`, penanganan race condition dengan `lockForUpdate`, serta respons RFC 9457 Problem Details `PersediaanSembakoDefisit`.
-- **Modul 2 (Asynchronous Messaging):** Konfigurasi RabbitMQ (Topic Exchange `warung.sembako.events`, Fanout DLX `warung.sembako.dlx`, antrean audit), Domain Event `TransaksiSembakoTercatat`, Consumer Buku Kas Idempoten (`buku_kas_warung`), Alarm Persediaan Kritis Gudang Sembako, dan Task Queue Worker WhatsApp Bot.
+- **Modul 1 (REST API & OpenAPI v1.1.0):** Perancangan kontrak `openapi.yaml` v1.1.0, validasi Spectral, implementasi katalog sembako dengan margin laba kotor, endpoint kasbon pelanggan dengan proteksi kredit 409 Conflict, serta respons RFC 9457 Problem Details.
+- **Modul 2 (Asynchronous Messaging & Outbox):** Arsitektur Outbox Pattern untuk ketahanan transaksi kasir, Topic Exchange `warung.sembako.events`, Fanout DLX `warung.sembako.dlx`, multi-domain events (`TransaksiKasirSelesai`, `KasbonPelangganDicatat`, `PeringatanStokKritis`), serta Consumer Buku Kas dengan agregasi rekap harian otomatis.
 
 ---
 
@@ -354,12 +356,12 @@ Berdasarkan rubrik penilaian RPS *"Layanan berjalan benar dan pesan terkirim ses
 | No | Butir Periksa Evaluasi | Bukti Implementasi di Repositori Warung Ibu Beti | Status |
 |:---:|---|---|:---:|
 | 1 | RabbitMQ berjalan dan Management UI dapat dibuka | Berjalan di port AMQP `5674` dan Web Management `http://localhost:15674` | ✅ Terpenuhi |
-| 2 | Publisher menerbitkan event ke exchange durable dengan pesan persistent, `message_id`, dan routing key bermakna | Implementasi `RabbitPublisher.php` menerbitkan pesan persistent ke exchange topic `warung.sembako.events` dengan routing key dinamis (`transaksi.kasir`, `transaksi.wa`, `logistik.kulakan`) | ✅ Terpenuhi |
-| 3 | Event dinamai dalam bentuk lampau dan isinya (payload) terdokumentasi | Event domain `TransaksiSembakoTercatat.php` dengan payload terstruktur lengkap | ✅ Terpenuhi |
-| 4 | Test publisher (event diterbitkan / tidak diterbitkan) ditulis sebelum implementasi dan lulus | `EventTransaksiTest.php` menguji skenario dispatch event, penolakan event saat persediaan defisit, dan routing key | ✅ Terpenuhi |
+| 2 | Publisher menerbitkan event ke exchange durable dengan pesan persistent, `message_id`, dan routing key bermakna | Implementasi `OutboxPublisherService` menerbitkan pesan persistent ke exchange topic `warung.sembako.events` dengan routing key dinamis (`transaksi.kasir`, `kasbon.catat`, `stok.kritis`) | ✅ Terpenuhi |
+| 3 | Event dinamai dalam bentuk lampau dan isinya (payload) terdokumentasi | Domain events: `TransaksiKasirSelesai`, `KasbonPelangganDicatat`, `PeringatanStokKritis` dengan payload terstruktur lengkap | ✅ Terpenuhi |
+| 4 | Test publisher (event diterbitkan / tidak diterbitkan) ditulis sebelum implementasi dan lulus | `OutboxPatternTest.php` dan `BarangApiTest.php` menguji skenario outbox event dan penolakan saat terjadi konflik bisnis | ✅ Terpenuhi |
 | 5 | Consumer memakai manual ack, dan pesan baru di-ack setelah selesai diproses | Perintah artisan `warung:catat-kas` menggunakan `basic_consume` dengan `no_ack = false` dan `basic_ack()` setelah commit | ✅ Terpenuhi |
-| 6 | Handler consumer idempoten: pesan dengan `message_id` sama tidak diproses dua kali, dan ada test-nya | Menggunakan `firstOrCreate` pada kolom unik `id_event_transaksi` dan diuji tuntas di `RekamBukuKasTest.php` | ✅ Terpenuhi |
+| 6 | Handler consumer idempoten: pesan dengan `message_id` sama tidak diproses dua kali, dan ada test-nya | Menggunakan `firstOrCreate` pada `id_event_transaksi` dan diuji tuntas di `BukuKasConsumerTest.php` | ✅ Terpenuhi |
 | 7 | Pesan tidak valid dialihkan ke Dead Letter Queue (DLQ), bukan dibuang diam-diam atau berputar tanpa akhir | Antrean `kasir.buku-kas` dikonfigurasi dengan argumen `x-dead-letter-exchange: warung.sembako.dlx` menuju `warung.audit.dlq` | ✅ Terpenuhi |
 | 8 | Skenario uji point-to-point: pesan tersimpan ketika consumer mati dan diproses ketika menyala | Teruji tuntas pada Skenario Uji 1 (tabel hasil uji terdokumentasi di atas) | ✅ Terpenuhi |
 | 9 | Skenario uji publish-subscribe: dua consumer menerima salinan event yang sama sesuai binding-nya | Teruji tuntas pada Skenario Uji 2 (`kasir.buku-kas` dan `gudang.stok-kritis`) | ✅ Terpenuhi |
-| 10 | Seluruh test (`sail artisan test`) lulus di setiap proyek | 17 automated tests lulus 100% (*green*) di PHPUnit | ✅ Terpenuhi |
+| 10 | Seluruh test (`sail artisan test`) lulus di setiap proyek | 15 automated feature tests lulus 100% (*81 assertions green*) di PHPUnit | ✅ Terpenuhi |

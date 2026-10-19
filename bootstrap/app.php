@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\BatasKasbonTerlampaui;
 use App\Exceptions\PersediaanSembakoDefisit;
 use App\Http\Problem;
 use Illuminate\Foundation\Application;
@@ -45,8 +46,8 @@ return Application::configure(basePath: dirname(__DIR__))
                     $request,
                     404,
                     'tidak-ditemukan',
-                    'Komoditas Tidak Ditemukan',
-                    'Kode barang sembako atau endpoint yang diminta tidak tersedia di warung.'
+                    'Sumber Daya Tidak Ditemukan',
+                    'Data komoditas sembako atau pelanggan yang diminta tidak terdaftar di sistem warung.'
                 );
             }
         });
@@ -60,6 +61,22 @@ return Application::configure(basePath: dirname(__DIR__))
                 'Persediaan Sembako Tidak Cukup',
                 $e->getMessage(),
                 ['stok_tersedia' => $e->stokTersedia]
+            );
+        });
+
+        // 409 — Batas kasbon terlampaui (Fitur Khas Warung)
+        $exceptions->render(function (BatasKasbonTerlampaui $e, Request $request) {
+            return Problem::response(
+                $request,
+                409,
+                'batas-kasbon-terlampaui',
+                'Limit Kasbon Pelanggan Terlampaui',
+                $e->getMessage(),
+                [
+                    'pelanggan_id' => $e->pelangganId,
+                    'kasbon_aktif' => $e->kasbonSaatIni,
+                    'limit_kasbon' => $e->limitKasbon,
+                ]
             );
         });
     })->create();

@@ -13,7 +13,8 @@ return new class extends Migration
             $table->string('kode_barang', 10)->unique();
             $table->string('nama', 120);
             $table->string('kategori', 50)->default('sembako');
-            $table->unsignedBigInteger('harga');
+            $table->unsignedBigInteger('harga_beli'); // Modal kulakan
+            $table->unsignedBigInteger('harga_jual'); // Harga jual eceran
             $table->unsignedInteger('stok')->default(0);
             $table->timestamps();
         });

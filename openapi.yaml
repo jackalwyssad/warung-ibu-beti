@@ -1,13 +1,14 @@
 openapi: 3.1.0
 info:
-  title: Layanan Katalog, Persediaan Sembako, dan Transaksi — Warung Ibu Beti
-  version: 1.0.0
+  title: Layanan Katalog, Kasir POS, dan Kasbon Warung — Warung Ibu Beti
+  version: 1.1.0
   contact:
     name: Tim TI Warung Ibu Beti (Kelompok Intel)
     email: ti@warungibubeti.test
   description: |
-    Kontrak REST API resmi untuk membaca katalog sembako, mengelola persediaan fisik rak warung,
-    dan mencatat transaksi kasir POS serta pesanan bot WhatsApp Warung Ibu Beti.
+    Kontrak REST API resmi versi 1.1.0 Warung Ibu Beti.
+    Mendukung transaksi kasir POS, filter kategori komoditas, perhitungan margin keuntungan,
+    serta pengelolaan utang kasbon pelanggan warung dengan kontrol limit kredit.
     Seluruh galat dikembalikan dalam format standar RFC 9457 Problem Details (application/problem+json).
 servers:
   - url: http://localhost:8000/api
@@ -16,14 +17,25 @@ servers:
     description: Lingkungan Port Default
 tags:
   - name: Sembako
-    description: Manajemen komoditas sembako dan mutasi transaksi kasir Warung Ibu Beti
+    description: Manajemen katalog sembako, pergerakan persediaan, dan margin laba
+  - name: Kasbon
+    description: Pengelolaan pelanggan dan fasilitas kasbon (utang belanja) warung
 paths:
   /v1/barang:
     get:
       tags: [Sembako]
       operationId: daftarBarang
-      summary: Menampilkan seluruh komoditas sembako beserta sisa persediaan
-      description: Mengembalikan seluruh data barang dagangan warung, diurutkan menurut kode barang.
+      summary: Menampilkan seluruh komoditas sembako dengan filter kategori
+      description: Mengembalikan daftar barang dagangan warung, mendukung filter berdasarkan query parameter `kategori`.
+      parameters:
+        - name: kategori
+          in: query
+          required: false
+          description: Filter menurut jenis kategori barang
+          schema:
+            type: string
+            enum: [sembako, minuman, bumbu, makanan]
+          example: sembako
       responses:
         '200':
           description: Daftar komoditas sembako berhasil diambil
@@ -40,8 +52,8 @@ paths:
     post:
       tags: [Sembako]
       operationId: tambahBarang
-      summary: Menambahkan komoditas sembako baru ke warung
-      description: Kode barang harus unik (format ABC-123). Bila nilai `stok` tidak dikirim, stok awal dianggap 0.
+      summary: Mendaftarkan komoditas sembako baru ke katalog warung
+      description: Kode barang harus unik (format ABC-123). Mengembalikan kode status 201 dan header Location.
       requestBody:
         required: true
         content:
@@ -69,8 +81,8 @@ paths:
     get:
       tags: [Sembako]
       operationId: detailBarang
-      summary: Menampilkan detail satu komoditas sembako berdasarkan kode barang
-      description: Mengembalikan kode galat 404 Problem Details jika komoditas tidak ditemukan di katalog warung.
+      summary: Menampilkan detail satu komoditas sembako beserta margin laba
+      description: Mengembalikan 404 Problem Details bila kode barang tidak ditemukan.
       responses:
         '200':
           description: Detail informasi komoditas sembako
@@ -84,13 +96,14 @@ paths:
   /v1/barang/{kode_barang}/catat-transaksi:
     parameters:
       - $ref: '#/components/parameters/KodeBarang'
+      - $ref: '#/components/parameters/IdempotencyKey'
     post:
       tags: [Sembako]
       operationId: catatTransaksiBarang
-      summary: Mencatat transaksi mutasi persediaan barang sembako
+      summary: Mencatat transaksi mutasi persediaan kasir atau pesanan WhatsApp
       description: |
-        Nilai `perubahan` negatif untuk arus keluar (penjualan kasir atau pesanan WhatsApp),
-        dan positif untuk arus masuk (kulakan gudang atau retur). Sisa persediaan rak warung tidak boleh defisit (< 0).
+        Nilai `perubahan` negatif untuk arus keluar barang (penjualan kasir atau pesanan WhatsApp).
+        Persediaan fisik di rak warung dilindungi Pessimistic Lock dan tidak boleh defisit (< 0).
       requestBody:
         required: true
         content:
@@ -107,7 +120,7 @@ paths:
         '404':
           $ref: '#/components/responses/KomoditasTidakDitemukan'
         '409':
-          description: Persediaan di warung tidak mencukupi permintaan transaksi
+          description: Persediaan di rak warung tidak mencukupi permintaan transaksi
           content:
             application/problem+json:
               schema:
@@ -119,6 +132,125 @@ paths:
                 detail: Persediaan barang SBK-001 di rak warung hanya tersisa 3, tidak mencukupi permintaan transaksi 5.
                 instance: /api/v1/barang/SBK-001/catat-transaksi
                 stok_tersedia: 3
+        '422':
+          $ref: '#/components/responses/ValidasiGagal'
+
+  /v1/pelanggan:
+    get:
+      tags: [Kasbon]
+      operationId: daftarPelanggan
+      summary: Menampilkan daftar pelanggan warung beserta status kasbon
+      description: Mengembalikan daftar seluruh pelanggan warung, limit kasbon, dan total kasbon aktif saat ini.
+      responses:
+        '200':
+          description: Daftar pelanggan berhasil diambil
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Pelanggan'
+    post:
+      tags: [Kasbon]
+      operationId: tambahPelanggan
+      summary: Mendaftarkan pelanggan baru warung
+      description: Menambahkan pelanggan baru beserta batas limit kasbon yang disetujui.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TambahPelanggan'
+      responses:
+        '201':
+          description: Pelanggan berhasil didaftarkan
+          headers:
+            Location:
+              description: URL detail pelanggan
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PelangganTunggal'
+        '422':
+          $ref: '#/components/responses/ValidasiGagal'
+
+  /v1/pelanggan/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID unik pelanggan di warung
+        schema:
+          type: integer
+        example: 1
+    get:
+      tags: [Kasbon]
+      operationId: detailPelanggan
+      summary: Menampilkan profil dan limit kasbon pelanggan
+      description: Mengembalikan profil satu pelanggan warung beserta detail limit kasbon aktif.
+      responses:
+        '200':
+          description: Detail pelanggan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PelangganTunggal'
+        '404':
+          $ref: '#/components/responses/PelangganTidakDitemukan'
+
+  /v1/pelanggan/{id}/kasbon:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID unik pelanggan
+        schema:
+          type: integer
+        example: 1
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Kasbon]
+      operationId: catatKasbonPelanggan
+      summary: Mencatat transaksi utang belanja (kasbon) pelanggan
+      description: |
+        Fitur khas Warung Ibu Beti: mencatat pembelian tempo/utang pelanggan.
+        Jika akumulasi kasbon melebihi limit yang ditentukan, sistem menolak dengan galat 409 Conflict Problem Details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatatKasbon'
+      responses:
+        '201':
+          description: Kasbon pelanggan berhasil dicatat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KasbonTunggal'
+        '404':
+          $ref: '#/components/responses/PelangganTidakDitemukan'
+        '409':
+          description: Total kasbon melebihi batas limit pelanggan
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://warungibubeti.test/problem/batas-kasbon-terlampaui
+                title: Limit Kasbon Pelanggan Terlampaui
+                status: 409
+                detail: Kasbon ditolak. Pelanggan Pak Joko memiliki kasbon aktif Rp 85.000, tambahan kasbon Rp 30.000 melebihi limit Rp 100.000.
+                instance: /api/v1/pelanggan/1/kasbon
+                pelanggan_id: 1
+                kasbon_aktif: 85000
+                limit_kasbon: 100000
         '422':
           $ref: '#/components/responses/ValidasiGagal'
 
@@ -134,10 +266,19 @@ components:
         pattern: '^[A-Z]{3}-[0-9]{3}$'
       example: SBK-001
 
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Kunci unik transaksi untuk mencegah duplikasi eksekusi pada jaringan tidak stabil
+      schema:
+        type: string
+      example: KB-20261019-001
+
   schemas:
     Barang:
       type: object
-      required: [kode_barang, nama, kategori, harga, stok, tersedia, diperbarui_pada]
+      required: [kode_barang, nama, kategori, harga_beli, harga_jual, margin_persen, stok, tersedia, diperbarui_pada]
       properties:
         kode_barang:
           type: string
@@ -148,19 +289,26 @@ components:
         kategori:
           type: string
           example: sembako
-        harga:
+        harga_beli:
           type: integer
           minimum: 0
-          description: Harga eceran warung dalam rupiah (tanpa desimal)
+          description: Harga modal kulakan dalam rupiah
+          example: 62000
+        harga_jual:
+          type: integer
+          minimum: 0
+          description: Harga eceran penjualan warung
           example: 72000
+        margin_persen:
+          type: number
+          description: Persentase keuntungan kotor terhadap modal (fitur v1.1.0)
+          example: 16.1
         stok:
           type: integer
           minimum: 0
-          description: Jumlah stok fisik di rak warung
           example: 15
         tersedia:
           type: boolean
-          description: Indikator cepat ketersediaan stok (true bila stok > 0)
           example: true
         diperbarui_pada:
           type: string
@@ -175,7 +323,7 @@ components:
 
     TambahBarang:
       type: object
-      required: [kode_barang, nama, harga]
+      required: [kode_barang, nama, harga_beli, harga_jual]
       properties:
         kode_barang:
           type: string
@@ -189,7 +337,11 @@ components:
           type: string
           enum: [sembako, minuman, bumbu, makanan]
           example: sembako
-        harga:
+        harga_beli:
+          type: integer
+          minimum: 0
+          example: 62000
+        harga_jual:
           type: integer
           minimum: 0
           example: 72000
@@ -213,6 +365,98 @@ components:
           enum: [penjualan_kasir, pesanan_wa, kulakan_gudang, retur_rusak]
           example: penjualan_kasir
 
+    Pelanggan:
+      type: object
+      required: [id, nama, limit_kasbon, total_kasbon, sisa_limit, dibuat_pada]
+      properties:
+        id:
+          type: integer
+          example: 1
+        nama:
+          type: string
+          example: Pak Joko Tetangga Depan
+        nomor_wa:
+          type: string
+          nullable: true
+          example: '081234567890'
+        limit_kasbon:
+          type: integer
+          example: 150000
+        total_kasbon:
+          type: integer
+          example: 45000
+        sisa_limit:
+          type: integer
+          example: 105000
+        dibuat_pada:
+          type: string
+          format: date-time
+
+    PelangganTunggal:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Pelanggan'
+
+    TambahPelanggan:
+      type: object
+      required: [nama]
+      properties:
+        nama:
+          type: string
+          maxLength: 100
+          example: Pak Joko Tetangga Depan
+        nomor_wa:
+          type: string
+          nullable: true
+          example: '081234567890'
+        limit_kasbon:
+          type: integer
+          minimum: 0
+          default: 150000
+          example: 150000
+
+    CatatKasbon:
+      type: object
+      required: [nominal, keterangan]
+      properties:
+        nominal:
+          type: integer
+          minimum: 1000
+          example: 35000
+        keterangan:
+          type: string
+          maxLength: 255
+          example: Beras 2kg dan Telur 1/2 kg
+
+    KasbonTunggal:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, id_transaksi_kasbon, pelanggan_id, nominal, keterangan, tercatat_pada]
+          properties:
+            id:
+              type: integer
+              example: 1
+            id_transaksi_kasbon:
+              type: string
+              example: KB-20261019-001
+            pelanggan_id:
+              type: integer
+              example: 1
+            nominal:
+              type: integer
+              example: 35000
+            keterangan:
+              type: string
+              example: Beras 2kg dan Telur 1/2 kg
+            tercatat_pada:
+              type: string
+              format: date-time
+
     Problem:
       type: object
       description: Format Problem Details sesuai RFC 9457
@@ -232,18 +476,28 @@ components:
           format: uri-reference
         errors:
           type: object
-          description: Rincian galat validasi per field
           additionalProperties:
             type: array
             items:
               type: string
         stok_tersedia:
           type: integer
-          description: Sisa stok fisik saat galat 409 terjadi
+        pelanggan_id:
+          type: integer
+        kasbon_aktif:
+          type: integer
+        limit_kasbon:
+          type: integer
 
   responses:
     KomoditasTidakDitemukan:
       description: Barang dengan kode tersebut tidak ditemukan di warung
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    PelangganTidakDitemukan:
+      description: Pelanggan tidak terdaftar di buku warung
       content:
         application/problem+json:
           schema:

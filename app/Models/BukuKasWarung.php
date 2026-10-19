@@ -10,18 +10,18 @@ class BukuKasWarung extends Model
 
     protected $fillable = [
         'id_event_transaksi',
-        'kode_barang',
-        'qty_keluar',
-        'harga_eceran',
-        'total_omzet',
-        'kanal_transaksi',
+        'kode_referensi',
+        'jenis_aliran',
+        'omzet',
+        'modal',
+        'laba_kotor',
         'terjadi_pada',
     ];
 
     protected $casts = [
-        'qty_keluar' => 'integer',
-        'harga_eceran' => 'integer',
-        'total_omzet' => 'integer',
+        'omzet' => 'integer',
+        'modal' => 'integer',
+        'laba_kotor' => 'integer',
         'terjadi_pada' => 'datetime',
     ];
 }
